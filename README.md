@@ -22,8 +22,8 @@ A modern Tetris interpretaion of the timeless classic written in Python
 ## Run
 
 ```bash
-pip install pygame
-python tetris.py
+install the venv with the given installer.bat
+run the tetris.bat file
 ```
 
 ## Controls
