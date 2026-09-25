@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pygame
 
+from joypad import JoypadManager
+
 # ----------------------------------------------------------------------------
 # Costanti
 # ----------------------------------------------------------------------------
@@ -982,6 +984,9 @@ def main():
     screen = apply_display_mode()
     clock = pygame.time.Clock()
 
+    joypad = JoypadManager()
+    joypad.install()
+
     def toggle_fullscreen():
         nonlocal screen, fullscreen
         fullscreen = not fullscreen
@@ -1103,10 +1108,13 @@ def main():
             elif e.type == pygame.WINDOWFOCUSLOST and game.state == "play":
                 game.paused = True
                 game.save_state()
+            else:
+                joypad.handle_event(e, game)
 
         if game.want_quit:
             quit_game()
 
+        joypad.update(dt, game)
         game.update(dt)
 
         # sfondo animato a piena finestra/schermo (mai barre nere)
