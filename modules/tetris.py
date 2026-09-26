@@ -421,6 +421,8 @@ class Game:
             self.fall_t = self.lock_t = 0.0
             self.resets = 0
             self.lowest = self.piece.y
+            self.last_action_rotate = False
+            self.last_kick_index = -1
             self.state = data.get("state", "play")
             if self.state == "clearing" and not self.clear_rows:
                 self.state = "play"
@@ -482,6 +484,8 @@ class Game:
         self.fall_t = self.lock_t = 0.0
         self.resets = 0
         self.lowest = self.piece.y
+        self.last_action_rotate = False
+        self.last_kick_index = -1
         if self.collides(name, 0, self.piece.x, self.piece.y):
             self.game_over()
         else:
@@ -523,6 +527,7 @@ class Game:
         p.ox = max(-1.0, min(1.0, p.ox - dx))
         p.oy = max(-1.0, min(1.0, p.oy - dy))
         self._after_move()
+        self.last_action_rotate = False
         return True
 
     def rotate(self, d):
@@ -531,12 +536,14 @@ class Game:
             return
         new = (p.rot + d) % 4
         table = KICKS_I if p.name == "I" else KICKS_JLSTZ
-        for kx, ky in table[(p.rot, new)]:
+        for i, (kx, ky) in enumerate(table[(p.rot, new)]):
             if not self.collides(p.name, new, p.x + kx, p.y - ky):
                 p.rot, p.x, p.y = new, p.x + kx, p.y - ky
                 p.ox, p.oy = p.ox - kx, p.oy + ky
                 self._after_move()
                 self.sfx.play("rotate")
+                self.last_action_rotate = True
+                self.last_kick_index = i
                 return
 
     def do_hold(self):
@@ -565,6 +572,40 @@ class Game:
         self.sfx.play("hard")
         self.lock()
 
+    # ---- T-Spin (regola dei 3 angoli, standard SRS/Guideline) ----
+    def _tspin_type(self):
+        """None se non e' un T-Spin, altrimenti 'full' o 'mini'.
+        Vale solo se l'ultima azione riuscita sul pezzo e' stata una rotazione
+        (non un movimento/caduta successivi) e il pezzo e' una T. Si guarda
+        l'occupazione dei 4 angoli del box 3x3 attorno al centro della T:
+        se i 2 angoli "frontali" (dal lato verso cui punta la T) sono
+        entrambi occupati e' un T-Spin pieno; se lo sono i 2 "posteriori" ma
+        non i frontali e' un Mini, a meno che il kick usato per ruotare sia
+        l'ultimo della tabella (indice 4), nel qual caso conta come pieno."""
+        p = self.piece
+        if p.name != "T" or not self.last_action_rotate:
+            return None
+        cx, cy = p.x + 1, p.y + 1  # centro del box 3x3 (coincide col pivot SRS)
+
+        def occ(dx, dy):
+            x, y = cx + dx, cy + dy
+            if x < 0 or x >= W or y >= H + HID:
+                return True          # il muro/fondo conta come "occupato"
+            if y < 0:
+                return False         # sopra la zona nascosta: sempre libero
+            return self.grid[y][x] is not None
+
+        tl, tr, bl, br = occ(-1, -1), occ(1, -1), occ(-1, 1), occ(1, 1)
+        front_map = {0: (tl, tr), 1: (tr, br), 2: (bl, br), 3: (tl, bl)}
+        back_map = {0: (bl, br), 1: (tl, bl), 2: (tl, tr), 3: (tr, br)}
+        f0, f1 = front_map[p.rot]
+        b0, b1 = back_map[p.rot]
+        if f0 and f1:
+            return "full"
+        if b0 and b1 and (f0 or f1):
+            return "full" if self.last_kick_index == 4 else "mini"
+        return None
+
     # ---- lock & clear ----
     def lock(self):
         p = self.piece
@@ -575,28 +616,54 @@ class Game:
         if all(y < HID for _, y in cells):     # lock-out: tutto sopra la zona visibile
             self.game_over()
             return
+
+        tspin = self._tspin_type()
         full = [y for y in range(H + HID) if all(c is not None for c in self.grid[y])]
+        n, lvl = len(full), self.level()
+
         if not full:
             for c in cells:
                 self.squash[c] = 0.0
             self.combo = -1
+            if tspin:                          # T-Spin (Mini) senza linee: punti comunque
+                pts = (400 if tspin == "full" else 100) * lvl
+                self.score += pts
+                self._popup("T-SPIN" if tspin == "full" else "T-SPIN MINI", COLORS["T"], 0)
+                self.sfx.play("level")
             self.hold_used = False
             self.sfx.play("lock")
             self.spawn()
             return
 
-        n, lvl = len(full), self.level()
-        pts = (0, 100, 300, 500, 800)[n] * lvl
-        label = ("", "SINGLE", "DOUBLE", "TRIPLE", "TETRIS!")[n]
-        was_b2b, self.b2b = self.b2b, (n == 4)
-        if n == 4 and was_b2b:
+        if tspin:
+            base = {"full": (400, 800, 1200, 1600), "mini": (100, 200, 400, 600)}[tspin]
+            pts = base[n] * lvl
+            label = ("T-SPIN" if tspin == "full" else "T-SPIN MINI") + ("", " SINGLE", " DOUBLE", " TRIPLE")[n]
+            difficult = True                   # conta come "clear difficile" per il B2B
+        else:
+            pts = (0, 100, 300, 500, 800)[n] * lvl
+            label = ("", "SINGLE", "DOUBLE", "TRIPLE", "TETRIS!")[n]
+            difficult = (n == 4)
+
+        was_b2b, self.b2b = self.b2b, difficult
+        if difficult and was_b2b:
             pts = int(pts * 1.5)
-            label = "BACK-TO-BACK TETRIS!"
+            label = "BACK-TO-BACK " + label
+
+        # Perfect Clear (All Clear): dopo aver tolto le righe piene non resta nulla
+        full_set = set(full)
+        perfect = all(self.grid[y][x] is None for y in range(H + HID)
+                      for x in range(W) if y not in full_set)
+        if perfect:
+            pts += (0, 800, 1200, 1800, 2000)[n] * lvl
+
         self.combo += 1
         if self.combo > 0:
             pts += 50 * self.combo * lvl
             self._popup(f"COMBO x{self.combo}", (255, 200, 90), 60)
-        self._popup(label, COLORS["I"] if n < 4 else COLORS["O"], 0)
+        self._popup(label, COLORS["T"] if tspin else (COLORS["I"] if n < 4 else COLORS["O"]), 0)
+        if perfect:
+            self._popup("PERFECT CLEAR", (255, 255, 255), -30)
         self.score += pts
         self.lines += n
         if self.level() > lvl:
