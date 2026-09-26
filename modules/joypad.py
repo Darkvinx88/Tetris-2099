@@ -51,11 +51,30 @@ BUTTON_KEYS = {
     3: (pygame.K_c,),                   # Y / Triangolo -> hold
     4: (pygame.K_c,),                   # LB / L1     -> hold (alternativo)
     5: (pygame.K_z,),                   # RB / R1     -> ruota antiorario (alternativo)
-    6: (pygame.K_m,),                   # Back/Select -> audio on/off
-    # Start (bottone 7) e' gestito a parte in handle_event(), perche' il suo
-    # significato dipende dallo stato di gioco (pausa oppure conferma nei
-    # menu): inviare sempre entrambi i tasti causava pausa+conferma nello
+    # Bottone 6 e 7/9 (Options/Start/Share, a seconda del controller) sono
+    # gestiti a parte in handle_event() tramite START_BUTTONS, perche' il
+    # loro significato dipende dallo stato di gioco (pausa oppure conferma
+    # nei menu): inviare sempre entrambi i tasti causava pausa+conferma nello
     # stesso istante, annullando la pausa appena attivata.
+}
+
+# Indici "Start/Options/Share" osservati sui vari controller (Xbox=7,
+# PS4=varia molto a seconda di OS/driver: sul controller di test e' risultato
+# essere 6). Aggiungiamo tutti gli indici noti: non c'e' rischio di falsi
+# positivi perche' un solo bottone fisico per volta generera' l'evento.
+START_BUTTONS = (6, 7, 9)
+
+# Su PS4, con alcuni driver (in particolare su macOS o con vecchie versioni
+# di SDL), il D-pad non viene riportato come hat (JOYHATMOTION) ma come 4
+# pulsanti digitali distinti. Gli indici tipici sono 11=UP 12=DOWN 13=LEFT
+# 14=RIGHT: li gestiamo sia come eventi singoli (JOYBUTTONDOWN, per la
+# navigazione nei menu) sia nel polling continuo (per il movimento in
+# partita), esattamente come gia' avviene per l'hat.
+DPAD_BUTTON_KEYS = {
+    11: pygame.K_UP,
+    12: pygame.K_DOWN,
+    13: pygame.K_LEFT,
+    14: pygame.K_RIGHT,
 }
 
 
@@ -108,14 +127,19 @@ class JoypadManager:
         elif e.type == pygame.JOYDEVICEREMOVED:
             self.sticks.pop(e.instance_id, None)
         elif e.type == pygame.JOYBUTTONDOWN:
-            if e.button == 7:
-                # Start: in menu conferma/avvia, altrimenti mette in pausa.
-                # Mai entrambi insieme, altrimenti pausa e conferma
+            if e.button in START_BUTTONS:
+                # Start/Options: in menu conferma/avvia, altrimenti mette in
+                # pausa. Mai entrambi insieme, altrimenti pausa e conferma
                 # scatterebbero nello stesso istante annullandosi a vicenda.
                 if game.state == "menu":
                     game.keydown(pygame.K_RETURN)
                 else:
                     game.keydown(pygame.K_p)
+            elif e.button in DPAD_BUTTON_KEYS:
+                # D-pad riportato come pulsanti digitali (PS4 su alcuni
+                # driver): stesso comportamento del ramo JOYHATMOTION qui
+                # sotto, per la navigazione nei menu / azioni singole.
+                game.keydown(DPAD_BUTTON_KEYS[e.button])
             else:
                 for key in BUTTON_KEYS.get(e.button, ()):
                     game.keydown(key)
@@ -161,6 +185,12 @@ class JoypadManager:
                 hx, _ = js.get_hat(0)
                 if hx:
                     val = float(hx)
+            # D-pad riportato come pulsanti digitali (PS4 su alcuni driver)
+            n = js.get_numbuttons()
+            if n > 14 and js.get_button(14):
+                val = 1.0
+            elif n > 13 and js.get_button(13):
+                val = -1.0
         return val
 
     def _stick_axis_y(self):
@@ -184,6 +214,12 @@ class JoypadManager:
                 _, hy = js.get_hat(0)
                 if hy:
                     val = float(-hy)   # l'asse Y della levetta e' invertito rispetto all'hat
+            # D-pad riportato come pulsanti digitali (PS4 su alcuni driver)
+            n = js.get_numbuttons()
+            if n > 12 and js.get_button(12):
+                val = 1.0
+            elif n > 11 and js.get_button(11):
+                val = -1.0
         return val
 
     def _held_virtual_keys(self):
