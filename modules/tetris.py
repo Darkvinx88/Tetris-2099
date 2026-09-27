@@ -23,6 +23,7 @@ from pathlib import Path
 import pygame
 
 from joypad import JoypadManager
+from music import MusicManager
 
 # ----------------------------------------------------------------------------
 # Costanti
@@ -282,9 +283,12 @@ def save_high(v):
 def load_settings():
     try:
         data = json.loads(SETTINGS_FILE.read_text())
-        return {"fullscreen": bool(data.get("fullscreen", False))}
+        return {
+            "fullscreen": bool(data.get("fullscreen", False)),
+            "volume": max(0.0, min(1.0, float(data.get("volume", 0.6)))),
+        }
     except (OSError, ValueError, AttributeError, TypeError):
-        return {"fullscreen": False}
+        return {"fullscreen": False, "volume": 0.6}
 
 
 def save_settings(settings):
@@ -353,9 +357,11 @@ class Piece:
 
 
 class Game:
-    def __init__(self, high, sfx):
+    def __init__(self, high, sfx, music=None, on_settings_change=None):
         self.high = high
         self.sfx = sfx
+        self.music = music
+        self.on_settings_change = on_settings_change or (lambda: None)
         self.t = 0.0
         self.particles = []
         self.popups = []
@@ -371,8 +377,10 @@ class Game:
         self._track_save = True
         self.menu_sel = 0
         self.menu_rects = []
+        self.menu_vol_rect = None
         self.pause_sel = 0
         self.pause_rects = []
+        self.pause_vol_rect = None
         self.want_quit = False
 
     # ---- salvataggio/continua ----
@@ -430,7 +438,20 @@ class Game:
             self.reset()
 
     def menu_options(self):
-        return ["continua", "nuova", "esci"] if self.has_save else ["nuova", "esci"]
+        base = ["continua"] if self.has_save else []
+        return base + ["nuova", "volume", "esci"]
+
+    def pause_options(self):
+        return ("continua", "volume", "esci")
+
+    def volume_pct(self):
+        return round((self.music.volume if self.music else 0.0) * 100)
+
+    def adjust_volume(self, delta_pct):
+        if not self.music:
+            return
+        self.music.set_volume(self.music.volume + delta_pct / 100.0)
+        self.on_settings_change()
 
     def menu_activate(self, action):
         if action == "continua":
@@ -809,6 +830,10 @@ class Game:
                 self.menu_sel = (self.menu_sel - 1) % len(opts)
             elif key in (pygame.K_DOWN, pygame.K_s):
                 self.menu_sel = (self.menu_sel + 1) % len(opts)
+            elif opts[self.menu_sel] == "volume" and key in KEYS_L:
+                self.adjust_volume(-5)
+            elif opts[self.menu_sel] == "volume" and key in KEYS_R:
+                self.adjust_volume(5)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.menu_activate(opts[self.menu_sel])
             return
@@ -821,10 +846,17 @@ class Game:
                 self.save_state()
             return
         if self.paused and self.state in ("play", "clearing"):
-            if key in (pygame.K_UP, pygame.K_DOWN, pygame.K_w, pygame.K_s):
-                self.pause_sel = 1 - self.pause_sel
+            opts = self.pause_options()
+            if key in (pygame.K_UP, pygame.K_w):
+                self.pause_sel = (self.pause_sel - 1) % len(opts)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.pause_sel = (self.pause_sel + 1) % len(opts)
+            elif opts[self.pause_sel] == "volume" and key in KEYS_L:
+                self.adjust_volume(-5)
+            elif opts[self.pause_sel] == "volume" and key in KEYS_R:
+                self.adjust_volume(5)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
-                self.pause_activate(("continua", "esci")[self.pause_sel])
+                self.pause_activate(opts[self.pause_sel])
             return
         if self.state != "play" or self.paused:
             return
@@ -935,20 +967,53 @@ class Game:
             draw_text(cv, F["small"], "INVIO per rigiocare", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
         elif self.paused:
             self.draw_overlay(cv, "PAUSA", TEXT_BRIGHT)
-            opts = ("continua", "esci")
-            labels = {"continua": "CONTINUA", "esci": "ESCI"}
+            opts = self.pause_options()
+            labels = {"continua": "CONTINUA", "volume": "VOLUME", "esci": "ESCI"}
             self.pause_sel = min(self.pause_sel, len(opts) - 1)
             self.pause_rects = []
+            self.pause_vol_rect = None
             y = cy + uiscale(50)
             for i, opt in enumerate(opts):
                 sel = (i == self.pause_sel)
                 pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
                 color = TEXT_BRIGHT if sel else TEXT_DIM
-                text = ("> " if sel else "   ") + labels[opt]
-                rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
+                if opt == "volume":
+                    rect, bar_rect = self.draw_volume_row(cv, cx, y, sel, color, pulse)
+                    self.pause_vol_rect = bar_rect
+                else:
+                    text = ("> " if sel else "   ") + labels[opt]
+                    rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
                 self.pause_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
                 y += uiscale(50)
             draw_text(cv, F["small"], "P / ESC per riprendere", TEXT_DIM, (cx, y + uiscale(6)), "center", shadow=False)
+
+    def draw_volume_row(self, cv, cx, y, sel, color, pulse):
+        """Disegna l'etichetta VOLUME + uno slider orizzontale, e restituisce
+        (rect_riga_per_selezione, rect_barra_per_i_click)."""
+        label = ("> " if sel else "   ") + "VOLUME"
+        label_r = draw_text(cv, F["big"], label, color, (cx - uiscale(90), y), "midright", alpha=pulse)
+        bar_w, bar_h = uiscale(140), uiscale(14)
+        bar = pygame.Rect(0, 0, bar_w, bar_h)
+        bar.midleft = (cx - uiscale(60), label_r.centery)
+        pygame.draw.rect(cv, (255, 255, 255, 40), bar, border_radius=bar_h // 2)
+        pct = self.volume_pct() / 100.0
+        fill = bar.copy()
+        fill.width = max(bar_h, int(bar_w * pct))
+        pygame.draw.rect(cv, ACCENT if sel else TEXT_DIM, fill, border_radius=bar_h // 2)
+        pygame.draw.rect(cv, TEXT_BRIGHT, bar, width=1, border_radius=bar_h // 2)
+        draw_text(cv, F["small"], f"{self.volume_pct()}%", color, (bar.right + uiscale(14), label_r.centery),
+                  "midleft", alpha=pulse)
+        full_rect = label_r.union(bar)
+        return full_rect, bar
+
+    def apply_volume_click(self, bar_rect, mx):
+        """Imposta il volume in base al punto cliccato/trascinato dentro la barra."""
+        if not bar_rect or bar_rect.width <= 0:
+            return
+        pct = max(0.0, min(1.0, (mx - bar_rect.x) / bar_rect.width))
+        if self.music:
+            self.music.set_volume(pct)
+            self.on_settings_change()
 
     def draw_overlay(self, cv, title, color):
         ov = pygame.Surface((W * CELL + uiscale(16), H * CELL + uiscale(16)), pygame.SRCALPHA)
@@ -1003,22 +1068,27 @@ class Game:
         draw_text(cv, F["mid"], "Il classico, in versione moderna", TEXT_DIM, (cx, uiscale(290)), "center")
 
         opts = self.menu_options()
-        labels = {"continua": "CONTINUA", "nuova": "NUOVA PARTITA", "esci": "ESCI"}
+        labels = {"continua": "CONTINUA", "nuova": "NUOVA PARTITA", "volume": "VOLUME", "esci": "ESCI"}
         self.menu_sel = min(self.menu_sel, len(opts) - 1)
         self.menu_rects = []
+        self.menu_vol_rect = None
         y = uiscale(370)
         for i, opt in enumerate(opts):
             sel = (i == self.menu_sel)
             pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
             color = TEXT_BRIGHT if sel else TEXT_DIM
-            text = ("> " if sel else "   ") + labels[opt]
-            rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
+            if opt == "volume":
+                rect, bar_rect = self.draw_volume_row(cv, cx, y, sel, color, pulse)
+                self.menu_vol_rect = bar_rect
+            else:
+                text = ("> " if sel else "   ") + labels[opt]
+                rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
             self.menu_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
             y += uiscale(50)
 
         draw_text(cv, F["small"], f"Record: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
         for i, l in enumerate(("← → muovi   ↓ soft drop   ↑/X ruota   Z ruota indietro",
-                               "SPAZIO hard drop   C hold   P pausa   M audio")):
+                               "SPAZIO hard drop   C hold   P pausa   M audio   ← → regola volume")):
             draw_text(cv, F["small"], l, TEXT_DIM, (cx, y + uiscale(60) + i * uiscale(26)), "center", shadow=False)
 
 
@@ -1054,11 +1124,18 @@ def main():
     joypad = JoypadManager()
     joypad.install()
 
+    music_folder = Path(__file__).resolve().parent.parent / "assets" / "music"
+    music = MusicManager(music_folder, volume=settings["volume"])   # cerca .it/.xm/.mod/.s3m/.ogg/.mp3/.wav qui dentro
+    music.play()
+
+    def persist_settings():
+        save_settings({"fullscreen": fullscreen, "volume": music.volume})
+
     def toggle_fullscreen():
         nonlocal screen, fullscreen
         fullscreen = not fullscreen
         screen = apply_display_mode()
-        save_settings({"fullscreen": fullscreen})
+        persist_settings()
 
     fam = "segoeui,helveticaneue,arial,dejavusans"
     fam_cmds = "consolascondensed,cascadiacode,jetbrainsmono,consolas,menlo,couriernew,dejavusansmono"
@@ -1110,11 +1187,12 @@ def main():
         ambient["squares"] = [[random.uniform(0, sw), random.uniform(0, sh), random.randint(14, 60),
                                 random.uniform(8, 32), random.choice(list(COLORS.values()))] for _ in range(n)]
 
-    game = Game(load_high(), Sfx())
+    game = Game(load_high(), Sfx(), music, persist_settings)
 
     def quit_game():
         game.save_state()
         game.finalize_high()
+        music.stop()
         pygame.quit()
         sys.exit()
 
@@ -1147,6 +1225,10 @@ def main():
                 game.keydown(e.key)
             elif e.type == pygame.MOUSEMOTION and (game.state == "menu" or game.paused):
                 mc = to_canvas(e.pos)
+                vol_rect = game.menu_vol_rect if game.state == "menu" else game.pause_vol_rect
+                if e.buttons[0] and vol_rect and vol_rect.collidepoint(mc):
+                    game.apply_volume_click(vol_rect, mc[0])
+                    continue
                 rects = game.menu_rects if game.state == "menu" else game.pause_rects
                 for rect, _opt, i in rects:
                     if rect.collidepoint(mc):
@@ -1160,28 +1242,36 @@ def main():
                     toggle_fullscreen()
                 elif game.state == "menu":
                     mc = to_canvas(e.pos)
-                    for rect, opt, i in game.menu_rects:
-                        if rect.collidepoint(mc):
-                            game.menu_sel = i
-                            game.menu_activate(opt)
-                            break
+                    if game.menu_vol_rect and game.menu_vol_rect.collidepoint(mc):
+                        game.apply_volume_click(game.menu_vol_rect, mc[0])
+                    else:
+                        for rect, opt, i in game.menu_rects:
+                            if rect.collidepoint(mc):
+                                game.menu_sel = i
+                                game.menu_activate(opt)
+                                break
                 elif game.paused:
                     mc = to_canvas(e.pos)
-                    for rect, opt, i in game.pause_rects:
-                        if rect.collidepoint(mc):
-                            game.pause_sel = i
-                            game.pause_activate(opt)
-                            break
+                    if game.pause_vol_rect and game.pause_vol_rect.collidepoint(mc):
+                        game.apply_volume_click(game.pause_vol_rect, mc[0])
+                    else:
+                        for rect, opt, i in game.pause_rects:
+                            if rect.collidepoint(mc):
+                                game.pause_sel = i
+                                game.pause_activate(opt)
+                                break
             elif e.type == pygame.WINDOWFOCUSLOST and game.state == "play":
                 game.paused = True
                 game.save_state()
             else:
+                music.handle_event(e)
                 joypad.handle_event(e, game)
 
         if game.want_quit:
             quit_game()
 
         joypad.update(dt, game)
+        music.set_muted(not game.sfx.enabled)
         game.update(dt)
 
         # sfondo animato a piena finestra/schermo (mai barre nere)
