@@ -1,18 +1,4 @@
-"""
-Tetris moderno - pygame
-Requisiti: pip install pygame   (oppure pygame-ce)
 
-Comandi
-  ← → / A D   muovi          ↓ / S   soft drop
-  ↑ / X / W   ruota (orario) Z       ruota (antiorario)
-  SPAZIO      hard drop      C / SHIFT  hold
-  P / ESC     pausa          R       ricomincia
-  M           audio on/off
-
-La partita in corso viene salvata automaticamente (a ogni pezzo che si blocca,
-in pausa e alla chiusura). Dal menu, se esiste una partita salvata, INVIO la
-riprende (N per iniziarne una nuova).
-"""
 import array
 import json
 import math
@@ -122,7 +108,7 @@ F = {}  # font, inizializzati in main()
 
 
 # ----------------------------------------------------------------------------
-# Audio sintetizzato (nessun file esterno)
+# Audio sintetizzato 
 # ----------------------------------------------------------------------------
 class Sfx:
     def __init__(self, volume=1.0):
@@ -645,14 +631,7 @@ class Game:
 
     # ---- T-Spin (regola dei 3 angoli, standard SRS/Guideline) ----
     def _tspin_type(self):
-        """None se non e' un T-Spin, altrimenti 'full' o 'mini'.
-        Vale solo se l'ultima azione riuscita sul pezzo e' stata una rotazione
-        (non un movimento/caduta successivi) e il pezzo e' una T. Si guarda
-        l'occupazione dei 4 angoli del box 3x3 attorno al centro della T:
-        se i 2 angoli "frontali" (dal lato verso cui punta la T) sono
-        entrambi occupati e' un T-Spin pieno; se lo sono i 2 "posteriori" ma
-        non i frontali e' un Mini, a meno che il kick usato per ruotare sia
-        l'ultimo della tabella (indice 4), nel qual caso conta come pieno."""
+        
         p = self.piece
         if p.name != "T" or not self.last_action_rotate:
             return None
@@ -1192,9 +1171,7 @@ class Game:
             y += uiscale(50)
 
         draw_text(cv, F["small"], f"Record: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
-        for i, l in enumerate(("← → muovi   ↓ soft drop   ↑/X ruota   Z ruota indietro",
-                               "SPAZIO hard drop   C hold   P pausa   M audio   ← → regola slider")):
-            draw_text(cv, F["small"], l, TEXT_DIM, (cx, y + uiscale(60) + i * uiscale(26)), "center", shadow=False)
+        
 
 
 # ----------------------------------------------------------------------------
@@ -1207,13 +1184,7 @@ def main():
     fullscreen = settings["fullscreen"]
 
     def apply_display_mode():
-        # Torniamo al vero flag FULLSCREEN (il tentativo di finestra "borderless"
-        # non copriva sempre l'intero schermo su alcuni sistemi/driver). Lo
-        # sfarfallio nero che si vede tornando in finestra e' causato dal
-        # cambio di modalita' video gestito dal driver grafico quando si esce
-        # da una fullscreen "esclusiva": per ridurlo chiudiamo e reinizializziamo
-        # il sotto-sistema video prima di ricreare la finestra, il che su molti
-        # driver evita che resti bloccato un frame nero piu' a lungo del dovuto.
+        
         pygame.display.quit()
         pygame.display.init()
         if fullscreen:
@@ -1247,10 +1218,7 @@ def main():
     layout = {"scale": None, "board_bg": None, "canvas": None}
 
     def rebuild_layout(scale):
-        # Ricrea CELL, i pannelli e i font alla scala richiesta, cosi' in
-        # schermo intero (o finestra ridimensionata) tutto viene ridisegnato
-        # nativamente alla risoluzione giusta invece di essere ingrandito
-        # come una bitmap (niente piu' sgranatura).
+        
         global CELL, BOARD_X, BOARD_Y, WIN_W, WIN_H, UI_SCALE
         CELL = max(8, round(BASE_CELL * scale))
         BOARD_X = round(BASE_BOARD_X * scale)
@@ -1259,10 +1227,7 @@ def main():
         WIN_H = H * CELL + 2 * BOARD_Y
         UI_SCALE = scale
         for name, size in BASE_FONTS.items():
-            # I comandi (font "tiny") usano un monospace piu' curato, per farli
-            # somigliare a dei tasti/etichette invece del font generico dell'UI;
-            # essendo piu' "largo" a parita' di corpo, lo rendiamo leggermente
-            # piu' piccolo cosi' le righe restano dentro il riquadro COMANDI.
+            
             f = fam_cmds if name == "tiny" else fam
             eff_size = size * 0.72 if name == "tiny" else size
             F[name] = pygame.font.SysFont(f, max(8, round(eff_size * scale)), bold=(name != "tiny"))
@@ -1308,9 +1273,7 @@ def main():
         board_bg, canvas = ensure_layout(sw, sh)
         fs_btn = pygame.Rect(sw - 44, 12, 32, 32)
 
-        # scala/posizione del riquadro di gioco su schermo (serve anche per
-        # convertire le coordinate del mouse in coordinate del canvas, per i
-        # click sul menu)
+        
         m_scale = min(sw / WIN_W, sh / WIN_H)
         m_sx0 = (sw - WIN_W * m_scale) / 2
         m_sy0 = (sh - WIN_H * m_scale) / 2
