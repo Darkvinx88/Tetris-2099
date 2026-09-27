@@ -1054,7 +1054,7 @@ class Game:
                     rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
                 self.pause_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
                 y += uiscale(50)
-            draw_text(cv, F["small"], "P / ESC per riprendere", TEXT_DIM, (cx, y + uiscale(6)), "center", shadow=False)
+            
 
     def draw_slider_row(self, cv, cx, y, sel, color, pulse, label, pct):
         """Disegna un'etichetta + uno slider orizzontale, e restituisce
