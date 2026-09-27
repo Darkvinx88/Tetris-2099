@@ -125,8 +125,9 @@ F = {}  # font, inizializzati in main()
 # Audio sintetizzato (nessun file esterno)
 # ----------------------------------------------------------------------------
 class Sfx:
-    def __init__(self):
+    def __init__(self, volume=1.0):
         self.enabled = True
+        self.volume = max(0.0, min(1.0, volume))
         self.sounds = {}
         try:
             pygame.mixer.init(44100, -16, 1, 512)
@@ -155,7 +156,11 @@ class Sfx:
 
     def play(self, name):
         if self.enabled and name in self.sounds:
+            self.sounds[name].set_volume(self.volume)
             self.sounds[name].play()
+
+    def set_volume(self, pct):
+        self.volume = max(0.0, min(1.0, pct))
 
 
 # ----------------------------------------------------------------------------
@@ -286,9 +291,10 @@ def load_settings():
         return {
             "fullscreen": bool(data.get("fullscreen", False)),
             "volume": max(0.0, min(1.0, float(data.get("volume", 0.6)))),
+            "sfx_volume": max(0.0, min(1.0, float(data.get("sfx_volume", 0.6)))),
         }
     except (OSError, ValueError, AttributeError, TypeError):
-        return {"fullscreen": False, "volume": 0.6}
+        return {"fullscreen": False, "volume": 0.6, "sfx_volume": 0.6}
 
 
 def save_settings(settings):
@@ -377,10 +383,14 @@ class Game:
         self._track_save = True
         self.menu_sel = 0
         self.menu_rects = []
-        self.menu_vol_rect = None
+        self.menu_music_rect = None
+        self.menu_sfx_rect = None
+        self.menu_in_options = False
         self.pause_sel = 0
         self.pause_rects = []
-        self.pause_vol_rect = None
+        self.pause_music_rect = None
+        self.pause_sfx_rect = None
+        self.pause_in_options = False
         self.want_quit = False
 
     # ---- salvataggio/continua ----
@@ -438,34 +448,74 @@ class Game:
             self.reset()
 
     def menu_options(self):
+        if self.menu_in_options:
+            return ["music", "sfx", "esci"]
         base = ["continua"] if self.has_save else []
-        return base + ["nuova", "volume", "esci"]
+        return base + ["nuova", "opzioni", "esci"]
 
     def pause_options(self):
-        return ("continua", "volume", "esci")
+        if self.pause_in_options:
+            return ("music", "sfx", "esci")
+        return ("continua", "opzioni", "esci")
 
-    def volume_pct(self):
+    def music_pct(self):
         return round((self.music.volume if self.music else 0.0) * 100)
 
-    def adjust_volume(self, delta_pct):
+    def sfx_pct(self):
+        return round((self.sfx.volume if self.sfx else 0.0) * 100)
+
+    def now_playing_name(self):
+        m = self.music
+        if not m or not getattr(m, "enabled", False):
+            return ""
+        playlist = getattr(m, "_playlist", None)
+        idx = getattr(m, "_idx", -1)
+        if playlist and 0 <= idx < len(playlist):
+            return Path(playlist[idx]).stem
+        return ""
+
+    def adjust_music(self, delta_pct):
         if not self.music:
             return
         self.music.set_volume(self.music.volume + delta_pct / 100.0)
         self.on_settings_change()
 
+    def adjust_sfx(self, delta_pct):
+        if not self.sfx:
+            return
+        self.sfx.set_volume(self.sfx.volume + delta_pct / 100.0)
+        self.on_settings_change()
+
     def menu_activate(self, action):
         if action == "continua":
+            self.menu_in_options = False
             self.load_state()
         elif action == "nuova":
+            self.menu_in_options = False
             self.reset()
+        elif action == "opzioni":
+            self.menu_in_options = True
+            self.menu_sel = 0
         elif action == "esci":
-            self.want_quit = True
+            if self.menu_in_options:
+                self.menu_in_options = False
+                self.menu_sel = 0
+            else:
+                self.want_quit = True
 
     def pause_activate(self, action):
         if action == "continua":
+            self.pause_in_options = False
             self.paused = False
+        elif action == "opzioni":
+            self.pause_in_options = True
+            self.pause_sel = 0
         elif action == "esci":
-            self.want_quit = True
+            if self.pause_in_options:
+                self.pause_in_options = False
+                self.pause_sel = 0
+            else:
+                self.want_quit = True
 
     # ---- setup ----
     def reset(self):
@@ -830,10 +880,14 @@ class Game:
                 self.menu_sel = (self.menu_sel - 1) % len(opts)
             elif key in (pygame.K_DOWN, pygame.K_s):
                 self.menu_sel = (self.menu_sel + 1) % len(opts)
-            elif opts[self.menu_sel] == "volume" and key in KEYS_L:
-                self.adjust_volume(-5)
-            elif opts[self.menu_sel] == "volume" and key in KEYS_R:
-                self.adjust_volume(5)
+            elif opts[self.menu_sel] == "music" and key in KEYS_L:
+                self.adjust_music(-5)
+            elif opts[self.menu_sel] == "music" and key in KEYS_R:
+                self.adjust_music(5)
+            elif opts[self.menu_sel] == "sfx" and key in KEYS_L:
+                self.adjust_sfx(-5)
+            elif opts[self.menu_sel] == "sfx" and key in KEYS_R:
+                self.adjust_sfx(5)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.menu_activate(opts[self.menu_sel])
             return
@@ -841,9 +895,15 @@ class Game:
             self.reset()
             return
         if key in (pygame.K_p, pygame.K_ESCAPE) and self.state in ("play", "clearing"):
+            if self.paused and self.pause_in_options:
+                self.pause_in_options = False
+                self.pause_sel = 0
+                return
             self.paused = not self.paused
             if self.paused:
                 self.save_state()
+            else:
+                self.pause_in_options = False
             return
         if self.paused and self.state in ("play", "clearing"):
             opts = self.pause_options()
@@ -851,10 +911,14 @@ class Game:
                 self.pause_sel = (self.pause_sel - 1) % len(opts)
             elif key in (pygame.K_DOWN, pygame.K_s):
                 self.pause_sel = (self.pause_sel + 1) % len(opts)
-            elif opts[self.pause_sel] == "volume" and key in KEYS_L:
-                self.adjust_volume(-5)
-            elif opts[self.pause_sel] == "volume" and key in KEYS_R:
-                self.adjust_volume(5)
+            elif opts[self.pause_sel] == "music" and key in KEYS_L:
+                self.adjust_music(-5)
+            elif opts[self.pause_sel] == "music" and key in KEYS_R:
+                self.adjust_music(5)
+            elif opts[self.pause_sel] == "sfx" and key in KEYS_L:
+                self.adjust_sfx(-5)
+            elif opts[self.pause_sel] == "sfx" and key in KEYS_R:
+                self.adjust_sfx(5)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.pause_activate(opts[self.pause_sel])
             return
@@ -966,20 +1030,25 @@ class Game:
             pulse = int(140 + 115 * math.sin(self.t * 4))
             draw_text(cv, F["small"], "INVIO per rigiocare", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
         elif self.paused:
-            self.draw_overlay(cv, "PAUSA", TEXT_BRIGHT)
+            prefix_shift = F["big"].size("   ")[0] // 2
+            self.draw_overlay(cv, "PAUSA", TEXT_BRIGHT, x_offset=prefix_shift)
             opts = self.pause_options()
-            labels = {"continua": "CONTINUA", "volume": "VOLUME", "esci": "ESCI"}
+            labels = {"continua": "CONTINUA", "opzioni": "OPZIONI", "music": "MUSIC", "sfx": "SFX", "esci": "ESCI"}
             self.pause_sel = min(self.pause_sel, len(opts) - 1)
             self.pause_rects = []
-            self.pause_vol_rect = None
+            self.pause_music_rect = None
+            self.pause_sfx_rect = None
             y = cy + uiscale(50)
             for i, opt in enumerate(opts):
                 sel = (i == self.pause_sel)
                 pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
                 color = TEXT_BRIGHT if sel else TEXT_DIM
-                if opt == "volume":
-                    rect, bar_rect = self.draw_volume_row(cv, cx, y, sel, color, pulse)
-                    self.pause_vol_rect = bar_rect
+                if opt == "music":
+                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct())
+                    self.pause_music_rect = bar_rect
+                elif opt == "sfx":
+                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct())
+                    self.pause_sfx_rect = bar_rect
                 else:
                     text = ("> " if sel else "   ") + labels[opt]
                     rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
@@ -987,27 +1056,26 @@ class Game:
                 y += uiscale(50)
             draw_text(cv, F["small"], "P / ESC per riprendere", TEXT_DIM, (cx, y + uiscale(6)), "center", shadow=False)
 
-    def draw_volume_row(self, cv, cx, y, sel, color, pulse):
-        """Disegna l'etichetta VOLUME + uno slider orizzontale, e restituisce
+    def draw_slider_row(self, cv, cx, y, sel, color, pulse, label, pct):
+        """Disegna un'etichetta + uno slider orizzontale, e restituisce
         (rect_riga_per_selezione, rect_barra_per_i_click)."""
-        label = ("> " if sel else "   ") + "VOLUME"
-        label_r = draw_text(cv, F["big"], label, color, (cx - uiscale(90), y), "midright", alpha=pulse)
+        text = ("> " if sel else "   ") + label
+        label_r = draw_text(cv, F["big"], text, color, (cx - uiscale(90), y), "midright", alpha=pulse)
         bar_w, bar_h = uiscale(140), uiscale(14)
         bar = pygame.Rect(0, 0, bar_w, bar_h)
         bar.midleft = (cx - uiscale(60), label_r.centery)
         pygame.draw.rect(cv, (255, 255, 255, 40), bar, border_radius=bar_h // 2)
-        pct = self.volume_pct() / 100.0
         fill = bar.copy()
-        fill.width = max(bar_h, int(bar_w * pct))
+        fill.width = max(bar_h, int(bar_w * (pct / 100.0)))
         pygame.draw.rect(cv, ACCENT if sel else TEXT_DIM, fill, border_radius=bar_h // 2)
         pygame.draw.rect(cv, TEXT_BRIGHT, bar, width=1, border_radius=bar_h // 2)
-        draw_text(cv, F["small"], f"{self.volume_pct()}%", color, (bar.right + uiscale(14), label_r.centery),
+        draw_text(cv, F["small"], f"{pct}%", color, (bar.right + uiscale(14), label_r.centery),
                   "midleft", alpha=pulse)
         full_rect = label_r.union(bar)
         return full_rect, bar
 
-    def apply_volume_click(self, bar_rect, mx):
-        """Imposta il volume in base al punto cliccato/trascinato dentro la barra."""
+    def apply_music_click(self, bar_rect, mx):
+        """Imposta il volume musica in base al punto cliccato/trascinato dentro la barra."""
         if not bar_rect or bar_rect.width <= 0:
             return
         pct = max(0.0, min(1.0, (mx - bar_rect.x) / bar_rect.width))
@@ -1015,11 +1083,21 @@ class Game:
             self.music.set_volume(pct)
             self.on_settings_change()
 
-    def draw_overlay(self, cv, title, color):
+    def apply_sfx_click(self, bar_rect, mx):
+        """Imposta il volume effetti in base al punto cliccato/trascinato dentro la barra."""
+        if not bar_rect or bar_rect.width <= 0:
+            return
+        pct = max(0.0, min(1.0, (mx - bar_rect.x) / bar_rect.width))
+        if self.sfx:
+            self.sfx.set_volume(pct)
+            self.on_settings_change()
+
+    def draw_overlay(self, cv, title, color, x_offset=0):
         ov = pygame.Surface((W * CELL + uiscale(16), H * CELL + uiscale(16)), pygame.SRCALPHA)
         pygame.draw.rect(ov, (0, 0, 0, 170), ov.get_rect(), border_radius=uiscale(12))
         cv.blit(ov, (BOARD_X - uiscale(8), BOARD_Y - uiscale(8)))
-        draw_text(cv, F["big"], title, color, (BOARD_X + W * CELL // 2, BOARD_Y + H * CELL // 2 - uiscale(40)), "center")
+        draw_text(cv, F["big"], title, color,
+                  (BOARD_X + W * CELL // 2 + x_offset, BOARD_Y + H * CELL // 2 - uiscale(40)), "center")
 
     def draw_panels(self, cv):
         # sinistra: HOLD + statistiche
@@ -1040,6 +1118,28 @@ class Game:
             draw_text(cv, F["small"], label, TEXT_DIM, (stats.x + uiscale(16), y), shadow=False)
             draw_text(cv, F["big"], val, col, (stats.right - uiscale(16), y + uiscale(18)), "topright")
             y += uiscale(84)
+
+        # now playing (nome traccia, scorrevole se troppo lungo per la colonna)
+        now = self.now_playing_name()
+        pad = uiscale(16)
+        avail_w = stats.width - pad * 2
+        label_y = stats.bottom - uiscale(34)
+        name_y = label_y + uiscale(16)
+        draw_text(cv, F["tiny"], "NOW PLAYING", TEXT_DIM, (stats.x + pad, label_y), shadow=False)
+        name_surf = F["tiny"].render(now or "-", True, TEXT_BRIGHT)
+        clip_rect = pygame.Rect(stats.x + pad, name_y, avail_w, name_surf.get_height())
+        if name_surf.get_width() <= avail_w:
+            cv.blit(name_surf, (clip_rect.x, name_y))
+        else:
+            old_clip = cv.get_clip()
+            cv.set_clip(clip_rect)
+            gap = uiscale(40)
+            total_w = name_surf.get_width() + gap
+            offset = (self.t * uiscale(30)) % total_w
+            x = clip_rect.x - offset
+            cv.blit(name_surf, (x, name_y))
+            cv.blit(name_surf, (x + total_w, name_y))
+            cv.set_clip(old_clip)
 
         # destra: NEXT + comandi
         nx = BOARD_X + W * CELL + uiscale(20)
@@ -1062,24 +1162,29 @@ class Game:
         x = cx - total // 2
         for i, c in enumerate(letters):
             img = F["title"].render(c, True, COLORS[names[i]])
-            y = uiscale(170) + math.sin(self.t * 2.5 + i * 0.7) * uiscale(10)
+            y = uiscale(140) + math.sin(self.t * 2.5 + i * 0.7) * uiscale(10)
             cv.blit(img, (x, y))
             x += img.get_width() + uiscale(6)
-        draw_text(cv, F["mid"], "Il classico, in versione moderna", TEXT_DIM, (cx, uiscale(290)), "center")
+        draw_text(cv, F["mid"], "Il classico, in versione moderna", TEXT_DIM, (cx, uiscale(275)), "center")
 
         opts = self.menu_options()
-        labels = {"continua": "CONTINUA", "nuova": "NUOVA PARTITA", "volume": "VOLUME", "esci": "ESCI"}
+        labels = {"continua": "CONTINUA", "nuova": "NUOVA PARTITA", "opzioni": "OPZIONI",
+                  "music": "MUSIC", "sfx": "SFX", "esci": "ESCI"}
         self.menu_sel = min(self.menu_sel, len(opts) - 1)
         self.menu_rects = []
-        self.menu_vol_rect = None
+        self.menu_music_rect = None
+        self.menu_sfx_rect = None
         y = uiscale(370)
         for i, opt in enumerate(opts):
             sel = (i == self.menu_sel)
             pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
             color = TEXT_BRIGHT if sel else TEXT_DIM
-            if opt == "volume":
-                rect, bar_rect = self.draw_volume_row(cv, cx, y, sel, color, pulse)
-                self.menu_vol_rect = bar_rect
+            if opt == "music":
+                rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct())
+                self.menu_music_rect = bar_rect
+            elif opt == "sfx":
+                rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct())
+                self.menu_sfx_rect = bar_rect
             else:
                 text = ("> " if sel else "   ") + labels[opt]
                 rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
@@ -1088,7 +1193,7 @@ class Game:
 
         draw_text(cv, F["small"], f"Record: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
         for i, l in enumerate(("← → muovi   ↓ soft drop   ↑/X ruota   Z ruota indietro",
-                               "SPAZIO hard drop   C hold   P pausa   M audio   ← → regola volume")):
+                               "SPAZIO hard drop   C hold   P pausa   M audio   ← → regola slider")):
             draw_text(cv, F["small"], l, TEXT_DIM, (cx, y + uiscale(60) + i * uiscale(26)), "center", shadow=False)
 
 
@@ -1129,7 +1234,7 @@ def main():
     music.play()
 
     def persist_settings():
-        save_settings({"fullscreen": fullscreen, "volume": music.volume})
+        save_settings({"fullscreen": fullscreen, "volume": music.volume, "sfx_volume": game.sfx.volume})
 
     def toggle_fullscreen():
         nonlocal screen, fullscreen
@@ -1187,7 +1292,7 @@ def main():
         ambient["squares"] = [[random.uniform(0, sw), random.uniform(0, sh), random.randint(14, 60),
                                 random.uniform(8, 32), random.choice(list(COLORS.values()))] for _ in range(n)]
 
-    game = Game(load_high(), Sfx(), music, persist_settings)
+    game = Game(load_high(), Sfx(volume=settings["sfx_volume"]), music, persist_settings)
 
     def quit_game():
         game.save_state()
@@ -1221,13 +1326,22 @@ def main():
                     toggle_fullscreen()
                     continue
                 if e.key == pygame.K_ESCAPE and game.state == "menu":
-                    quit_game()
+                    if game.menu_in_options:
+                        game.menu_in_options = False
+                        game.menu_sel = 0
+                    else:
+                        quit_game()
+                    continue
                 game.keydown(e.key)
             elif e.type == pygame.MOUSEMOTION and (game.state == "menu" or game.paused):
                 mc = to_canvas(e.pos)
-                vol_rect = game.menu_vol_rect if game.state == "menu" else game.pause_vol_rect
-                if e.buttons[0] and vol_rect and vol_rect.collidepoint(mc):
-                    game.apply_volume_click(vol_rect, mc[0])
+                music_rect = game.menu_music_rect if game.state == "menu" else game.pause_music_rect
+                sfx_rect = game.menu_sfx_rect if game.state == "menu" else game.pause_sfx_rect
+                if e.buttons[0] and music_rect and music_rect.collidepoint(mc):
+                    game.apply_music_click(music_rect, mc[0])
+                    continue
+                if e.buttons[0] and sfx_rect and sfx_rect.collidepoint(mc):
+                    game.apply_sfx_click(sfx_rect, mc[0])
                     continue
                 rects = game.menu_rects if game.state == "menu" else game.pause_rects
                 for rect, _opt, i in rects:
@@ -1242,8 +1356,10 @@ def main():
                     toggle_fullscreen()
                 elif game.state == "menu":
                     mc = to_canvas(e.pos)
-                    if game.menu_vol_rect and game.menu_vol_rect.collidepoint(mc):
-                        game.apply_volume_click(game.menu_vol_rect, mc[0])
+                    if game.menu_music_rect and game.menu_music_rect.collidepoint(mc):
+                        game.apply_music_click(game.menu_music_rect, mc[0])
+                    elif game.menu_sfx_rect and game.menu_sfx_rect.collidepoint(mc):
+                        game.apply_sfx_click(game.menu_sfx_rect, mc[0])
                     else:
                         for rect, opt, i in game.menu_rects:
                             if rect.collidepoint(mc):
@@ -1252,8 +1368,10 @@ def main():
                                 break
                 elif game.paused:
                     mc = to_canvas(e.pos)
-                    if game.pause_vol_rect and game.pause_vol_rect.collidepoint(mc):
-                        game.apply_volume_click(game.pause_vol_rect, mc[0])
+                    if game.pause_music_rect and game.pause_music_rect.collidepoint(mc):
+                        game.apply_music_click(game.pause_music_rect, mc[0])
+                    elif game.pause_sfx_rect and game.pause_sfx_rect.collidepoint(mc):
+                        game.apply_sfx_click(game.pause_sfx_rect, mc[0])
                     else:
                         for rect, opt, i in game.pause_rects:
                             if rect.collidepoint(mc):
