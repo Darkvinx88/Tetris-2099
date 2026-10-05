@@ -22,6 +22,7 @@ A modern take on the classic, written in Python with pygame.
 ## Run
 
 Set up the virtual environment with `installer.bat`, then start the game with `tetris.bat`.
+On linux just use the `installer.sh`, then start the game with `tetris.sh`.
 
 Or, if you prefer doing it by hand:
 
