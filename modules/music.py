@@ -112,7 +112,7 @@ class MusicManager:
             # .it/.xm/.mod, ma possibile): salta al brano successivo invece
             # di bloccare il gioco. Se capita spesso con lo stesso file,
             # conviene convertirlo in .ogg.
-            print(f"[music] impossibile caricare {track.name}: {e}")
+            print(f"[music] could not load {track.name}: {e}")
             self._playlist.pop(self._idx)
             self._idx -= 1
             if self._playlist:
