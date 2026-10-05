@@ -1171,6 +1171,10 @@ class Game:
             y += uiscale(50)
 
         draw_text(cv, F["small"], f"High score: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
+
+        # discreet signature, bottom-left
+        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.1", (70, 76, 100),
+                  (uiscale(10), WIN_H - uiscale(8)), "bottomleft", shadow=False, alpha=150)
         
 
 
