@@ -23,21 +23,6 @@ il file in .ogg con uno strumento esterno (es. openmpt123, mikmod, o
 esportando da un tracker come MilkyTracker/OpenMPT) e usare quello al
 posto dell'originale.
 
-Uso in tetris.py (poche righe di integrazione):
-
-    from modules.music import MusicManager
-    ...
-    music = MusicManager("music")     # cartella con le tracce
-    music.play()                      # avvia la playlist (shuffle di default)
-    ...
-    # nel game loop, una volta per frame:
-    music.update()
-    ...
-    # per legare il volume musica allo stesso mute (M) degli Sfx:
-    music.set_muted(not game.sfx.enabled)
-    ...
-    # alla chiusura:
-    music.stop()
 """
 import random
 from pathlib import Path
