@@ -2,7 +2,8 @@
 
 A modern take on the classic, written in Python with pygame.
 
-<img width="1920" height="1080" alt="Tetris 2099 screenshot" src="https://github.com/user-attachments/assets/dbaeebac-34df-4431-8609-f85a8c833c3d" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/24cc1e91-cc8c-4c52-830c-1460e04cae29" />
+
 
 ## Features
 
