@@ -1003,16 +1003,16 @@ class Game:
         # overlay
         if self.state == "over":
             self.draw_overlay(cv, "GAME OVER", (255, 100, 100))
-            draw_text(cv, F["mid"], f"Punteggio  {self.score:,}", TEXT_BRIGHT, (cx, cy + uiscale(50)), "center")
+            draw_text(cv, F["mid"], f"Score  {self.score:,}", TEXT_BRIGHT, (cx, cy + uiscale(50)), "center")
             if self.new_high:
-                draw_text(cv, F["mid"], "NUOVO RECORD!", COLORS["O"], (cx, cy + uiscale(84)), "center")
+                draw_text(cv, F["mid"], "NEW HIGH SCORE!", COLORS["O"], (cx, cy + uiscale(84)), "center")
             pulse = int(140 + 115 * math.sin(self.t * 4))
-            draw_text(cv, F["small"], "INVIO per rigiocare", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
+            draw_text(cv, F["small"], "Press ENTER to play again", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
         elif self.paused:
             prefix_shift = F["big"].size("   ")[0] // 2
-            self.draw_overlay(cv, "PAUSA", TEXT_BRIGHT, x_offset=prefix_shift)
+            self.draw_overlay(cv, "PAUSED", TEXT_BRIGHT, x_offset=prefix_shift)
             opts = self.pause_options()
-            labels = {"continua": "CONTINUA", "opzioni": "OPZIONI", "music": "MUSIC", "sfx": "SFX", "esci": "ESCI"}
+            labels = {"continua": "RESUME", "opzioni": "OPTIONS", "music": "MUSIC", "sfx": "SFX", "esci": "QUIT"}
             self.pause_sel = min(self.pause_sel, len(opts) - 1)
             self.pause_rects = []
             self.pause_music_rect = None
@@ -1087,10 +1087,10 @@ class Game:
         stats = pygame.Rect(uiscale(20), BOARD_Y + uiscale(137), uiscale(160), H * CELL - uiscale(129))
         panel(cv, stats)
         items = (
-            ("PUNTEGGIO", f"{int(self.disp_score):,}", TEXT_BRIGHT),
-            ("RECORD", f"{max(self.high, self.score):,}", COLORS["O"]),
-            ("LIVELLO", str(self.level()), COLORS["I"]),
-            ("RIGHE", str(self.lines), COLORS["S"]),
+            ("SCORE", f"{int(self.disp_score):,}", TEXT_BRIGHT),
+            ("BEST", f"{max(self.high, self.score):,}", COLORS["O"]),
+            ("LEVEL", str(self.level()), COLORS["I"]),
+            ("LINES", str(self.lines), COLORS["S"]),
         )
         y = stats.y + uiscale(18)
         for label, val, col in items:
@@ -1128,8 +1128,8 @@ class Game:
             size = uiscale(24) if i == 0 else uiscale(19)
             draw_preview(cv, name, nxt.centerx, nxt.y + uiscale(66) + i * uiscale(62), size)
         help_r = pygame.Rect(nx, nxt.bottom + uiscale(12), uiscale(160), H * CELL + uiscale(8) - nxt.height - uiscale(12))
-        panel(cv, help_r, "COMANDI")
-        lines = ("← → muovi", "↑ X ruota", "Z ruota indietro", "↓ soft drop", "SPAZIO hard drop", "C hold", "P pausa  M audio")
+        panel(cv, help_r, "CONTROLS")
+        lines = ("← → move", "↑ X rotate", "Z rotate back", "↓ soft drop", "SPACE hard drop", "C hold", "P pause  M audio")
         for i, l in enumerate(lines):
             draw_text(cv, F["tiny"], l, TEXT_DIM, (help_r.x + uiscale(10), help_r.y + uiscale(36) + i * uiscale(22)), shadow=False)
 
@@ -1144,11 +1144,11 @@ class Game:
             y = uiscale(140) + math.sin(self.t * 2.5 + i * 0.7) * uiscale(10)
             cv.blit(img, (x, y))
             x += img.get_width() + uiscale(6)
-        draw_text(cv, F["mid"], "Il classico, in versione moderna", TEXT_DIM, (cx, uiscale(275)), "center")
+        draw_text(cv, F["mid"], "The classic, reimagined", TEXT_DIM, (cx, uiscale(275)), "center")
 
         opts = self.menu_options()
-        labels = {"continua": "CONTINUA", "nuova": "NUOVA PARTITA", "opzioni": "OPZIONI",
-                  "music": "MUSIC", "sfx": "SFX", "esci": "ESCI"}
+        labels = {"continua": "CONTINUE", "nuova": "NEW GAME", "opzioni": "OPTIONS",
+                  "music": "MUSIC", "sfx": "SFX", "esci": "QUIT"}
         self.menu_sel = min(self.menu_sel, len(opts) - 1)
         self.menu_rects = []
         self.menu_music_rect = None
@@ -1170,7 +1170,7 @@ class Game:
             self.menu_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
             y += uiscale(50)
 
-        draw_text(cv, F["small"], f"Record: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
+        draw_text(cv, F["small"], f"High score: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
         
 
 
