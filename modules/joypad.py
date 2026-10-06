@@ -7,33 +7,6 @@ tradotti negli stessi "tasti" che il gioco gia' conosce (KEYS_L/R/DOWN/ROT/
 HOLD, P, M, ecc.), quindi DAS/ARR, rotazioni SRS, hold, pausa e menu si
 comportano in modo identico sia con tastiera sia con joypad.
 
-Due meccanismi, entrambi trasparenti per il resto del gioco:
-
-1. Movimento continuo (stick sinistro / D-pad) durante il gioco:
-   viene fatto un monkeypatch di pygame.key.get_pressed() cosi' che il
-   ciclo DAS/ARR/soft-drop di Game.update() (che legge la tastiera) "veda"
-   anche lo stato del joypad come se KEYS_L/KEYS_R/KEYS_DOWN fossero premuti.
-
-2. Azioni singole (rotazione, hard drop, hold, pausa, muto, navigazione e
-   conferma nei menu): i pulsanti generano eventi JOYBUTTONDOWN che vengono
-   inoltrati a Game.keydown(...) con il tasto corrispondente. Game.keydown()
-   e' gia' "consapevole dello stato" (menu / pausa / partita / game over),
-   quindi e' sicuro inviare piu' tasti per uno stesso pulsante: quelli non
-   pertinenti allo stato corrente vengono semplicemente ignorati dal gioco.
-
-Uso in tetris.py (poche righe di integrazione):
-
-    from modules.joypad import JoypadManager
-    ...
-    joypad = JoypadManager()
-    joypad.install()                 # subito dopo pygame.init() / nel main()
-    ...
-    for e in pygame.event.get():
-        ...
-        else:
-            joypad.handle_event(e, game)
-    ...
-    joypad.update(dt, game)          # una volta per frame, nel game loop
 """
 import pygame
 
@@ -78,6 +51,21 @@ DPAD_BUTTON_KEYS = {
 }
 
 
+# Rumble per evento di gioco: nome Sfx -> (motore grave, motore acuto, durata ms).
+# Agganciato a Sfx.play() da JoypadManager.attach_sfx(): ogni suono di gioco
+# produce anche la sua vibrazione. "rotate" e' escluso (troppo frequente);
+# per averlo aggiungi "rotate": (0.0, 0.12, 30).
+RUMBLE_EVENTS = {
+    "hold":   (0.00, 0.25, 50),
+    "lock":   (0.30, 0.00, 70),
+    "hard":   (0.65, 0.25, 120),
+    "clear":  (0.45, 0.65, 200),
+    "level":  (0.35, 0.55, 280),   # anche T-Spin
+    "tetris": (0.85, 1.00, 450),
+    "over":   (1.00, 0.60, 900),
+}
+
+
 class _MergedKeys:
     """Oggetto 'tipo array' restituito al posto di pygame.key.get_pressed():
     si comporta come l'originale ma risulta True anche per i tasti virtuali
@@ -93,9 +81,13 @@ class _MergedKeys:
 
 
 class JoypadManager:
-    def __init__(self):
+    def __init__(self, rumble=True, rumble_scale=1.0):
         pygame.joystick.init()
         self.sticks = {}
+        self.rumble_enabled = rumble
+        self.rumble_scale = rumble_scale
+        self._rumble_until = 0       # ms (pygame.time.get_ticks) di fine vibrazione
+        self._rumble_power = 0.0     # intensita' della vibrazione in corso
         self._scan()
         self._last_axis_dir = 0     # per la navigazione nei menu con lo stick
 
@@ -105,6 +97,52 @@ class JoypadManager:
             js = pygame.joystick.Joystick(i)
             js.init()
             self.sticks[js.get_instance_id()] = js
+
+    # ---- rumble ----
+    def attach_sfx(self, sfx):
+        """Avvolge sfx.play(): a ogni effetto sonoro corrisponde una vibrazione."""
+        if getattr(sfx, "_joypad_rumble_wrapped", False):
+            return
+        original_play = sfx.play
+        manager = self
+
+        def play_with_rumble(name):
+            original_play(name)
+            manager.rumble(name)
+
+        sfx.play = play_with_rumble
+        sfx._joypad_rumble_wrapped = True
+
+    def rumble(self, name):
+        """Fa vibrare tutti i controller per l'evento 'name'. SDL tiene una
+        sola vibrazione per volta: una piu' debole non sostituisce una piu'
+        forte ancora in corso (es. lock subito dopo hard drop)."""
+        spec = RUMBLE_EVENTS.get(name)
+        if not spec or not self.rumble_enabled or not self.sticks:
+            return
+        low, high, ms = spec
+        low = max(0.0, min(1.0, low * self.rumble_scale))
+        high = max(0.0, min(1.0, high * self.rumble_scale))
+        power = max(low, high)
+        now = pygame.time.get_ticks()
+        if now < self._rumble_until and power < self._rumble_power:
+            return
+        for js in self.sticks.values():
+            try:
+                js.rumble(low, high, ms)
+            except (pygame.error, AttributeError, NotImplementedError):
+                pass   # controller senza rumble / pygame vecchio: ignora
+        self._rumble_until = now + ms
+        self._rumble_power = power
+
+    def stop_rumble(self):
+        for js in self.sticks.values():
+            try:
+                js.stop_rumble()
+            except (pygame.error, AttributeError, NotImplementedError):
+                pass
+        self._rumble_until = 0
+        self._rumble_power = 0.0
 
     def install(self):
         """Fa il monkeypatch di pygame.key.get_pressed una sola volta, cosi'
