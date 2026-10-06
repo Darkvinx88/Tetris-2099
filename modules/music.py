@@ -23,6 +23,21 @@ il file in .ogg con uno strumento esterno (es. openmpt123, mikmod, o
 esportando da un tracker come MilkyTracker/OpenMPT) e usare quello al
 posto dell'originale.
 
+Uso in tetris.py (poche righe di integrazione):
+
+    from modules.music import MusicManager
+    ...
+    music = MusicManager("music")     # cartella con le tracce
+    music.play()                      # avvia la playlist (shuffle di default)
+    ...
+    # nel game loop, una volta per frame:
+    music.update()
+    ...
+    # per legare il volume musica allo stesso mute (M) degli Sfx:
+    music.set_muted(not game.sfx.enabled)
+    ...
+    # alla chiusura:
+    music.stop()
 """
 import random
 from pathlib import Path
@@ -62,6 +77,19 @@ class MusicManager:
             self._scan()
         except pygame.error:
             self.enabled = False
+
+    # ---- accesso in sola lettura (usato da visuals.py per la sincronia) ----
+    @property
+    def current_track(self):
+        """Path del brano in riproduzione, o None se la playlist non e' partita."""
+        if 0 <= self._idx < len(self._playlist):
+            return self._playlist[self._idx]
+        return None
+
+    @property
+    def playlist(self):
+        """Copia della playlist corrente (per l'analisi in anticipo)."""
+        return list(self._playlist)
 
     # ---- scoperta file ----
     def _scan(self):
