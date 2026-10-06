@@ -78,6 +78,58 @@ if [ $? -ne 0 ]; then
 fi
 echo "[OK] Dependencies installed."
 
+# ---------------------------------------------------------------------------
+# libopenmpt (system library, OPTIONAL)
+# Used by visuals.py (via ctypes) for exact beat sync on tracker music
+# (.it .xm .s3m .mod). pip cannot install it. Without it the game still
+# works: trackers just get the background without exact sync.
+# ---------------------------------------------------------------------------
+echo
+have_openmpt() {
+    ldconfig -p 2>/dev/null | grep -q "libopenmpt\.so" && return 0
+    ls "$DIR"/libopenmpt*.so* &>/dev/null && return 0
+    return 1
+}
+
+if have_openmpt; then
+    echo "[OK] libopenmpt found."
+else
+    echo "[WARN] libopenmpt not found (optional: beat sync for tracker music)."
+    PM_CMD=""
+    if command -v apt-get &>/dev/null; then
+        PM_CMD="sudo apt-get install -y libopenmpt0"
+    elif command -v pacman &>/dev/null; then
+        PM_CMD="sudo pacman -S --needed --noconfirm libopenmpt"
+    elif command -v rpm-ostree &>/dev/null; then
+        echo "  Immutable system detected (Bazzite/Silverblue): the library"
+        echo "  would need a layered package + reboot:"
+        echo "    sudo rpm-ostree install libopenmpt"
+        echo "  Skipping. You can do it later; the game works without it."
+    elif command -v dnf &>/dev/null; then
+        PM_CMD="sudo dnf install -y libopenmpt"
+    elif command -v zypper &>/dev/null; then
+        PM_CMD="sudo zypper install -y libopenmpt0"
+    fi
+
+    if [ -n "$PM_CMD" ]; then
+        echo "  Command: $PM_CMD"
+        if [ -t 0 ]; then
+            read -r -p "  Install it now? [y/N] " ANS
+        else
+            ANS="n"
+        fi
+        if [[ "$ANS" =~ ^[Yy]$ ]]; then
+            if $PM_CMD && have_openmpt; then
+                echo "[OK] libopenmpt installed."
+            else
+                echo "[WARN] Could not install libopenmpt. Continuing without it."
+            fi
+        else
+            echo "  Skipped. Run the command above later if you want beat sync."
+        fi
+    fi
+fi
+
 echo
 echo "================================"
 echo "  Installation complete!"
