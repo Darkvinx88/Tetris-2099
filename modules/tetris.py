@@ -1,4 +1,3 @@
-
 import array
 import json
 import math
@@ -10,6 +9,7 @@ import pygame
 
 from joypad import JoypadManager
 from music import MusicManager
+from visuals import VisualsManager, MODES
 
 # ----------------------------------------------------------------------------
 # Costanti
@@ -278,9 +278,12 @@ def load_settings():
             "fullscreen": bool(data.get("fullscreen", False)),
             "volume": max(0.0, min(1.0, float(data.get("volume", 0.6)))),
             "sfx_volume": max(0.0, min(1.0, float(data.get("sfx_volume", 0.6)))),
+            "vibration": bool(data.get("vibration", True)),
+            "background": data.get("background") if data.get("background") in MODES else MODES[0],
         }
     except (OSError, ValueError, AttributeError, TypeError):
-        return {"fullscreen": False, "volume": 0.6, "sfx_volume": 0.6}
+        return {"fullscreen": False, "volume": 0.6, "sfx_volume": 0.6,
+                "vibration": True, "background": MODES[0]}
 
 
 def save_settings(settings):
@@ -354,6 +357,10 @@ class Game:
         self.sfx = sfx
         self.music = music
         self.on_settings_change = on_settings_change or (lambda: None)
+        self.vibration = True           # rumble del joypad (salvato nei settings)
+        self.start_bg = MODES[0]        # sfondo iniziale (salvato nei settings)
+        self.joypad = None              # collegati da main()
+        self.visuals = None
         self.t = 0.0
         self.particles = []
         self.popups = []
@@ -435,14 +442,14 @@ class Game:
 
     def menu_options(self):
         if self.menu_in_options:
-            return ["music", "sfx", "esci"]
+            return ["music", "sfx", "vibration", "background", "esci"]
         base = ["continua"] if self.has_save else []
         return base + ["nuova", "opzioni", "esci"]
 
     def pause_options(self):
         if self.pause_in_options:
             return ("music", "sfx", "esci")
-        return ("continua", "opzioni", "esci")
+        return ("continua", "restart", "opzioni", "menu", "esci")
 
     def music_pct(self):
         return round((self.music.volume if self.music else 0.0) * 100)
@@ -472,8 +479,33 @@ class Game:
         self.sfx.set_volume(self.sfx.volume + delta_pct / 100.0)
         self.on_settings_change()
 
+    def toggle_vibration(self):
+        self.vibration = not self.vibration
+        if self.joypad:
+            self.joypad.rumble_enabled = self.vibration
+            if self.vibration:
+                self.joypad.rumble("clear")      # piccola vibrazione di prova
+            else:
+                self.joypad.stop_rumble()
+        self.on_settings_change()
+
+    def cycle_background(self, step=1):
+        """Cambia lo sfondo iniziale e lo applica subito come anteprima."""
+        if self.visuals:
+            self.visuals.set_mode(self.start_bg)     # parte dallo sfondo salvato
+            self.visuals.next_mode(step)
+            self.start_bg = self.visuals.mode
+        else:
+            i = MODES.index(self.start_bg) if self.start_bg in MODES else 0
+            self.start_bg = MODES[(i + step) % len(MODES)]
+        self.on_settings_change()
+
     def menu_activate(self, action):
-        if action == "continua":
+        if action == "vibration":
+            self.toggle_vibration()
+        elif action == "background":
+            self.cycle_background(1)
+        elif action == "continua":
             self.menu_in_options = False
             self.load_state()
         elif action == "nuova":
@@ -489,10 +521,28 @@ class Game:
             else:
                 self.want_quit = True
 
+    def go_main_menu(self):
+        """Dalla pausa alla schermata iniziale. La partita viene salvata,
+        quindi dal menu si puo' riprendere con CONTINUE."""
+        self.save_state()                       # sicuro anche se la pausa non l'aveva salvata
+        self.paused = False
+        self.pause_in_options = False
+        self.pause_sel = 0
+        self.state = "menu"
+        self.menu_in_options = False
+        self.menu_sel = 0
+        self.has_save = SAVESTATE_FILE.exists()
+
     def pause_activate(self, action):
-        if action == "continua":
+        if action == "menu":
+            self.go_main_menu()
+        elif action == "continua":
             self.pause_in_options = False
             self.paused = False
+        elif action == "restart":
+            self.pause_in_options = False
+            self.pause_sel = 0
+            self.reset()
         elif action == "opzioni":
             self.pause_in_options = True
             self.pause_sel = 0
@@ -867,6 +917,12 @@ class Game:
                 self.adjust_sfx(-5)
             elif opts[self.menu_sel] == "sfx" and key in KEYS_R:
                 self.adjust_sfx(5)
+            elif opts[self.menu_sel] == "vibration" and (key in KEYS_L or key in KEYS_R):
+                self.toggle_vibration()
+            elif opts[self.menu_sel] == "background" and key in KEYS_L:
+                self.cycle_background(-1)
+            elif opts[self.menu_sel] == "background" and key in KEYS_R:
+                self.cycle_background(1)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.menu_activate(opts[self.menu_sel])
             return
@@ -1012,7 +1068,8 @@ class Game:
             prefix_shift = F["big"].size("   ")[0] // 2
             self.draw_overlay(cv, "PAUSED", TEXT_BRIGHT, x_offset=prefix_shift)
             opts = self.pause_options()
-            labels = {"continua": "RESUME", "opzioni": "OPTIONS", "music": "MUSIC", "sfx": "SFX", "esci": "QUIT"}
+            labels = {"continua": "RESUME", "restart": "RESTART", "opzioni": "OPTIONS", "menu": "MAIN MENU",
+                      "music": "MUSIC", "sfx": "SFX", "esci": "BACK" if self.pause_in_options else "QUIT"}
             self.pause_sel = min(self.pause_sel, len(opts) - 1)
             self.pause_rects = []
             self.pause_music_rect = None
@@ -1023,10 +1080,10 @@ class Game:
                 pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
                 color = TEXT_BRIGHT if sel else TEXT_DIM
                 if opt == "music":
-                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct())
+                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct(), compact=True)
                     self.pause_music_rect = bar_rect
                 elif opt == "sfx":
-                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct())
+                    rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct(), compact=True)
                     self.pause_sfx_rect = bar_rect
                 else:
                     text = ("> " if sel else "   ") + labels[opt]
@@ -1035,20 +1092,35 @@ class Game:
                 y += uiscale(50)
             
 
-    def draw_slider_row(self, cv, cx, y, sel, color, pulse, label, pct):
+    def draw_slider_row(self, cv, cx, y, sel, color, pulse, label, pct, compact=False):
         """Disegna un'etichetta + uno slider orizzontale, e restituisce
-        (rect_riga_per_selezione, rect_barra_per_i_click)."""
+        (rect_riga_per_selezione, rect_barra_per_i click).
+        compact=True: versione piu' piccola, centrata in cx, che sta dentro
+        l'overlay stretto del menu pausa (largo quanto la board)."""
         text = ("> " if sel else "   ") + label
-        label_r = draw_text(cv, F["big"], text, color, (cx - uiscale(90), y), "midright", alpha=pulse)
-        bar_w, bar_h = uiscale(140), uiscale(14)
-        bar = pygame.Rect(0, 0, bar_w, bar_h)
-        bar.midleft = (cx - uiscale(60), label_r.centery)
+        if compact:
+            font = F["mid"]
+            label_w = max(font.size("   MUSIC")[0], font.size("   SFX")[0])
+            bar_w, bar_h = uiscale(84), uiscale(12)
+            gap = uiscale(10)
+            total = label_w + gap + bar_w + gap + F["small"].size("100%")[0]
+            x0 = cx - total // 2
+            label_r = draw_text(cv, font, text, color, (x0, y), "midleft", alpha=pulse)
+            bar = pygame.Rect(0, 0, bar_w, bar_h)
+            bar.midleft = (x0 + label_w + gap, label_r.centery)
+            pct_gap = gap
+        else:
+            label_r = draw_text(cv, F["big"], text, color, (cx - uiscale(90), y), "midright", alpha=pulse)
+            bar_w, bar_h = uiscale(140), uiscale(14)
+            bar = pygame.Rect(0, 0, bar_w, bar_h)
+            bar.midleft = (cx - uiscale(60), label_r.centery)
+            pct_gap = uiscale(14)
         pygame.draw.rect(cv, (255, 255, 255, 40), bar, border_radius=bar_h // 2)
         fill = bar.copy()
         fill.width = max(bar_h, int(bar_w * (pct / 100.0)))
         pygame.draw.rect(cv, ACCENT if sel else TEXT_DIM, fill, border_radius=bar_h // 2)
         pygame.draw.rect(cv, TEXT_BRIGHT, bar, width=1, border_radius=bar_h // 2)
-        draw_text(cv, F["small"], f"{pct}%", color, (bar.right + uiscale(14), label_r.centery),
+        draw_text(cv, F["small"], f"{pct}%", color, (bar.right + pct_gap, label_r.centery),
                   "midleft", alpha=pulse)
         full_rect = label_r.union(bar)
         return full_rect, bar
@@ -1148,7 +1220,11 @@ class Game:
 
         opts = self.menu_options()
         labels = {"continua": "CONTINUE", "nuova": "NEW GAME", "opzioni": "OPTIONS",
-                  "music": "MUSIC", "sfx": "SFX", "esci": "QUIT"}
+                  "music": "MUSIC", "sfx": "SFX", "esci": "QUIT",
+                  "vibration": "VIBRATION: " + ("ON" if self.vibration else "OFF"),
+                  "background": "BACKGROUND: " + self.start_bg.upper()}
+        if self.menu_in_options:
+            labels["esci"] = "BACK"
         self.menu_sel = min(self.menu_sel, len(opts) - 1)
         self.menu_rects = []
         self.menu_music_rect = None
@@ -1201,15 +1277,19 @@ def main():
     screen = apply_display_mode()
     clock = pygame.time.Clock()
 
-    joypad = JoypadManager()
+    joypad = JoypadManager(rumble=settings["vibration"])
     joypad.install()
 
     music_folder = Path(__file__).resolve().parent.parent / "assets" / "music"
     music = MusicManager(music_folder, volume=settings["volume"])   # cerca .it/.xm/.mod/.s3m/.ogg/.mp3/.wav qui dentro
     music.play()
 
+    # VisualsManager: sfondi audio-reattivi (synthwave, starfield, plasma, squares)
+    visuals = VisualsManager(music, mode=settings["background"], colors=list(COLORS.values()))
+
     def persist_settings():
-        save_settings({"fullscreen": fullscreen, "volume": music.volume, "sfx_volume": game.sfx.volume})
+        save_settings({"fullscreen": fullscreen, "volume": music.volume, "sfx_volume": game.sfx.volume,
+                       "vibration": game.vibration, "background": game.start_bg})
 
     def toggle_fullscreen():
         nonlocal screen, fullscreen
@@ -1247,23 +1327,14 @@ def main():
 
     board_bg, canvas = ensure_layout(*screen.get_size())
 
-    # sfondo "ambient" che riempie tutto lo schermo dietro al riquadro di gioco,
-    # rigenerato solo quando cambiano le dimensioni reali della finestra/schermo
-    ambient = {"size": None, "bg": None, "fx": None, "squares": None}
-
-    def ensure_ambient(sw, sh):
-        if ambient["size"] == (sw, sh):
-            return
-        ambient["size"] = (sw, sh)
-        ambient["bg"] = make_background(sw, sh)
-        ambient["fx"] = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        n = min(90, max(22, (sw * sh) // 28000))
-        ambient["squares"] = [[random.uniform(0, sw), random.uniform(0, sh), random.randint(14, 60),
-                                random.uniform(8, 32), random.choice(list(COLORS.values()))] for _ in range(n)]
-
     game = Game(load_high(), Sfx(volume=settings["sfx_volume"]), music, persist_settings)
+    joypad.attach_sfx(game.sfx)
+    game.joypad, game.visuals = joypad, visuals
+    game.vibration = settings["vibration"]
+    game.start_bg = visuals.mode        # se plasma non e' disponibile (no numpy) cade su synthwave
 
     def quit_game():
+        joypad.stop_rumble()
         game.save_state()
         game.finalize_high()
         music.stop()
@@ -1273,7 +1344,6 @@ def main():
     while True:
         dt = min(clock.tick(FPS) / 1000.0, 0.05)
         sw, sh = screen.get_size()
-        ensure_ambient(sw, sh)
         board_bg, canvas = ensure_layout(sw, sh)
         fs_btn = pygame.Rect(sw - 44, 12, 32, 32)
 
@@ -1289,6 +1359,10 @@ def main():
             if e.type == pygame.QUIT:
                 quit_game()
             elif e.type == pygame.KEYDOWN:
+                # Tasti per i visuals: B = prossimo sfondo, Shift+B = precedente,
+                # F3 = HUD debug, [ e ] = aggiusta sincronia audio
+                if visuals.handle_event(e):
+                    continue
                 if e.key == pygame.K_F11:
                     toggle_fullscreen()
                     continue
@@ -1359,16 +1433,9 @@ def main():
         music.set_muted(not game.sfx.enabled)
         game.update(dt)
 
-        # sfondo animato a piena finestra/schermo (mai barre nere)
-        screen.blit(ambient["bg"], (0, 0))
-        fxs = ambient["fx"]
-        fxs.fill((0, 0, 0, 0))
-        for s in ambient["squares"]:
-            s[1] -= s[3] * dt
-            if s[1] < -s[2]:
-                s[0], s[1] = random.uniform(0, sw), sh + s[2]
-            pygame.draw.rect(fxs, (*s[4], 22), (s[0], s[1], s[2], s[2]), width=2, border_radius=8)
-        screen.blit(fxs, (0, 0))
+        # Sfondo audio-reattivo (synthwave/starfield/plasma/squares)
+        visuals.update(dt, game)
+        visuals.draw(screen)
 
         canvas.fill((0, 0, 0, 0))
         game.draw(canvas, board_bg)
