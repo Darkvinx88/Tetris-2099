@@ -15,29 +15,6 @@ a ogg/mp3/wav/flac. Quindi i classici chiptune "da keygen" in .it/.xm
 funzionano di norma SENZA bisogno di convertirli: basta metterli nella
 cartella e MusicManager li carica cosi' come sono.
 
-Se una particolare build di SDL2_mixer non li supportasse (capita di rado,
-dipende da come e' stato compilato pygame), il caricamento fallisce in modo
-pulito: MusicManager stampa un avviso e passa al brano successivo, invece
-di far crashare il gioco. In quel caso, come fallback, si puo' convertire
-il file in .ogg con uno strumento esterno (es. openmpt123, mikmod, o
-esportando da un tracker come MilkyTracker/OpenMPT) e usare quello al
-posto dell'originale.
-
-Uso in tetris.py (poche righe di integrazione):
-
-    from modules.music import MusicManager
-    ...
-    music = MusicManager("music")     # cartella con le tracce
-    music.play()                      # avvia la playlist (shuffle di default)
-    ...
-    # nel game loop, una volta per frame:
-    music.update()
-    ...
-    # per legare il volume musica allo stesso mute (M) degli Sfx:
-    music.set_muted(not game.sfx.enabled)
-    ...
-    # alla chiusura:
-    music.stop()
 """
 import random
 from pathlib import Path
