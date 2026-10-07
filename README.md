@@ -2,7 +2,11 @@
 
 A modern take on the classic, written in Python with pygame.
 
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/78f9803c-e7db-4d65-9c6e-7418a1ec2845" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/a12a3510-b4a0-4244-9348-2ab34179d490" />
+Main Menu
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/12f2597b-4718-475a-93b5-425816fcd5a3" />
+Pause Menu
+
 
 
 
