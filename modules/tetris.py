@@ -211,14 +211,34 @@ def draw_text(surf, font, text, color, pos, anchor="topleft", shadow=True, alpha
     return rect
 
 
-def panel(surf, rect, title=None):
+def _chamfer(w, h, c):
+    return [(c, 0), (w - 1, 0), (w - 1, h - c), (w - c, h - 1), (0, h - 1), (0, c)]
+
+
+def panel(surf, rect, title=None, accent=None, tick=None):
+    """Pannello HUD retrofuturista: angoli smussati, bordo neon, scanline."""
     rect = pygame.Rect(rect)
-    s = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(s, (10, 12, 26, 200), s.get_rect(), border_radius=14)
-    pygame.draw.rect(s, (255, 255, 255, 35), s.get_rect(), width=1, border_radius=14)
-    surf.blit(s, rect)
+    accent = accent or (255, 255, 255)
+    tick = tick or (120, 135, 200)
+    key = ("hudpanel", rect.size, accent, tick, UI_SCALE)
+    if key not in _cache:
+        w, h = rect.size
+        c = uiscale(12)
+        s = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pts = _chamfer(w, h, c)
+        pygame.draw.polygon(s, (10, 12, 26, 200), pts)
+        step = max(3, uiscale(3))
+        for yy in range(0, h, step):
+            pygame.draw.line(s, (0, 0, 0, 40), (0, yy), (w, yy))
+        pygame.draw.polygon(s, (*accent, 35), pts, 1)
+        tk = uiscale(18)
+        pygame.draw.line(s, (*tick, 150), (c + 4, 0), (c + 4 + tk, 0), 2)
+        pygame.draw.line(s, (*tick, 150), (w - 6 - tk, h - 1), (w - 6, h - 1), 2)
+        _cache[key] = s
+    surf.blit(_cache[key], rect)
     if title:
-        draw_text(surf, F["small"], title, TEXT_DIM, (rect.centerx, rect.y + uiscale(14)), "center", shadow=False)
+        draw_text(surf, F["small"], "// " + title, TEXT_DIM, (rect.centerx, rect.y + uiscale(16)),
+                  "center", shadow=False)
 
 
 def draw_preview(surf, name, cx, cy, size, dimmed=False):
@@ -243,13 +263,20 @@ def make_background(w=WIN_W, h=WIN_H):
 
 def make_board_bg():
     pad = uiscale(16)
-    s = pygame.Surface((W * CELL + pad, H * CELL + pad), pygame.SRCALPHA)
-    pygame.draw.rect(s, (7, 9, 20, 225), s.get_rect(), border_radius=uiscale(12))
+    w, h = W * CELL + pad, H * CELL + pad
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    c = uiscale(18)
+    pts = _chamfer(w, h, c)
+    pygame.draw.polygon(s, (7, 9, 20, 225), pts)
+    gc = (26, 30, 52)
     for i in range(1, W):
-        pygame.draw.line(s, (26, 30, 52), (pad // 2 + i * CELL, pad // 2), (pad // 2 + i * CELL, pad // 2 + H * CELL))
+        pygame.draw.line(s, gc, (pad // 2 + i * CELL, pad // 2), (pad // 2 + i * CELL, pad // 2 + H * CELL))
     for j in range(1, H):
-        pygame.draw.line(s, (26, 30, 52), (pad // 2, pad // 2 + j * CELL), (pad // 2 + W * CELL, pad // 2 + j * CELL))
-    pygame.draw.rect(s, (120, 135, 200, 150), s.get_rect(), width=2, border_radius=uiscale(12))
+        pygame.draw.line(s, gc, (pad // 2, pad // 2 + j * CELL), (pad // 2 + W * CELL, pad // 2 + j * CELL))
+    pygame.draw.polygon(s, (120, 135, 200, 150), pts, 2)
+    tk = uiscale(36)
+    pygame.draw.line(s, (120, 135, 200, 220), (c + 6, 0), (c + 6 + tk, 0), 4)
+    pygame.draw.line(s, (120, 135, 200, 220), (w - 8 - tk, h - 1), (w - 8, h - 1), 4)
     return s
 
 
@@ -339,6 +366,102 @@ def draw_fullscreen_button(surf, rect, hovered, active):
 # ----------------------------------------------------------------------------
 # Logica di gioco
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# TETRIS 2099 - stile retrofuturista del menu principale
+# ----------------------------------------------------------------------------
+NEON_CYAN = (0, 240, 255)
+NEON_MAGENTA = (255, 45, 170)
+NEON_VIOLET = (170, 150, 255)
+NEON_AMBER = (255, 214, 90)
+_menu_cache = {}
+
+
+def _grad_color(stops, t):
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        if t <= t1:
+            k = 0 if t1 == t0 else (t - t0) / (t1 - t0)
+            return tuple(int(c0[i] + (c1[i] - c0[i]) * k) for i in range(3))
+    return stops[-1][1]
+
+
+def _tint(surf, color):
+    s = surf.copy()
+    s.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return s
+
+
+def _blur_glow(surf, color, div=6):
+    w, h = surf.get_size()
+    small = pygame.transform.smoothscale(_tint(surf, color), (max(1, w // div), max(1, h // div)))
+    return pygame.transform.smoothscale(small, (w, h))
+
+
+def _gradient_text(text, font, stops, spacing=0, scale=1.0):
+    """Testo con gradiente verticale (effetto cromo / tramonto) + padding per il glow."""
+    parts = [font.render(c, True, (255, 255, 255)) for c in text]
+    w = sum(p.get_width() for p in parts) + spacing * (len(parts) - 1)
+    h = max(p.get_height() for p in parts)
+    txt = pygame.Surface((w, h), pygame.SRCALPHA)
+    x = 0
+    for p in parts:
+        txt.blit(p, (x, 0))
+        x += p.get_width() + spacing
+    if scale != 1.0:
+        txt = pygame.transform.smoothscale(txt, (int(w * scale), int(h * scale)))
+        w, h = txt.get_size()
+    grad = pygame.Surface((w, h))
+    for y in range(h):
+        pygame.draw.line(grad, _grad_color(stops, y / max(1, h - 1)), (0, y), (w, y))
+    txt.blit(grad, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    pad = uiscale(26)
+    base = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+    base.blit(txt, (pad, pad))
+    return base
+
+
+def _title_assets():
+    key = ("title", UI_SCALE)
+    if key not in _menu_cache:
+        chrome = [(0.0, (255, 255, 255)), (0.44, (120, 215, 255)), (0.50, (25, 30, 80)),
+                  (0.56, (255, 90, 200)), (1.0, (255, 190, 240))]
+        sunset = [(0.0, (255, 235, 100)), (0.55, (255, 120, 90)), (1.0, (255, 40, 170))]
+        t1 = _gradient_text("TETRIS", F["title"], chrome, spacing=uiscale(10))
+        t2 = _gradient_text("2099", F["title"], sunset, spacing=uiscale(34), scale=0.62)
+        _menu_cache[key] = {
+            "t1": t1, "t1_cy": _blur_glow(t1, NEON_CYAN), "t1_mg": _blur_glow(t1, NEON_MAGENTA),
+            "t1_red": _tint(t1, (255, 40, 90)), "t1_cyan": _tint(t1, (0, 240, 255)),
+            "t2": t2, "t2_mg": _blur_glow(t2, NEON_MAGENTA, 5),
+        }
+    return _menu_cache[key]
+
+
+def _menu_frame():
+    key = ("frame", WIN_W, WIN_H)
+    if key not in _menu_cache:
+        m, c = uiscale(24), uiscale(22)
+        w, h = WIN_W - 2 * m, WIN_H - 2 * m
+        s = pygame.Surface((w, h), pygame.SRCALPHA)
+        pts = [(c, 0), (w - 1, 0), (w - 1, h - c), (w - c, h - 1), (0, h - 1), (0, c)]
+        pygame.draw.polygon(s, (6, 4, 22, 170), pts)
+        pygame.draw.polygon(s, (*NEON_CYAN, 200), pts, 2)
+        t = uiscale(26)       # tacche magenta agli angoli opposti
+        pygame.draw.line(s, NEON_MAGENTA, (c + 6, 0), (c + 6 + t, 0), 4)
+        pygame.draw.line(s, NEON_MAGENTA, (w - 8 - t, h - 1), (w - 8, h - 1), 4)
+        _menu_cache[key] = s
+    return _menu_cache[key]
+
+
+def _scanlines():
+    key = ("scan", WIN_W, WIN_H)
+    if key not in _menu_cache:
+        s = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+        step = max(3, uiscale(3))
+        for y in range(0, WIN_H, step):
+            pygame.draw.line(s, (0, 0, 0, 55), (0, y), (WIN_W, y))
+        _menu_cache[key] = s
+    return _menu_cache[key]
+
+
 class Piece:
     def __init__(self, name):
         self.name = name
@@ -981,6 +1104,7 @@ class Game:
             return
         self.draw_panels(cv)
         cv.blit(board_bg, (BOARD_X - uiscale(8), BOARD_Y - uiscale(8)))
+        self.draw_board_glow(cv, board_bg)
 
         # blocchi bloccati
         p_clear = self.clear_t / CLEAR_TIME
@@ -1065,8 +1189,7 @@ class Game:
             pulse = int(140 + 115 * math.sin(self.t * 4))
             draw_text(cv, F["small"], "Press ENTER to play again", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
         elif self.paused:
-            prefix_shift = F["big"].size("   ")[0] // 2
-            self.draw_overlay(cv, "PAUSED", TEXT_BRIGHT, x_offset=prefix_shift)
+            self.draw_overlay(cv, "PAUSED", TEXT_BRIGHT)
             opts = self.pause_options()
             labels = {"continua": "RESUME", "restart": "RESTART", "opzioni": "OPTIONS", "menu": "MAIN MENU",
                       "music": "MUSIC", "sfx": "SFX", "esci": "BACK" if self.pause_in_options else "QUIT"}
@@ -1074,11 +1197,27 @@ class Game:
             self.pause_rects = []
             self.pause_music_rect = None
             self.pause_sfx_rect = None
-            y = cy + uiscale(50)
+            vis = getattr(self, "visuals", None)
+            beat = max(getattr(vis, "kick", 0.0), getattr(vis, "bassnote", 0.0)) if vis else 0.0
+            row_w = W * CELL - uiscale(24)
+            y = cy + uiscale(68)
             for i, opt in enumerate(opts):
                 sel = (i == self.pause_sel)
-                pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
-                color = TEXT_BRIGHT if sel else TEXT_DIM
+                pulse = int(190 + 65 * math.sin(self.t * 5.0)) if sel else 235
+                color = NEON_CYAN if sel else NEON_VIOLET
+                if sel:                          # barra neon + frecce triangolari
+                    bar = pygame.Rect(0, 0, row_w, uiscale(40))
+                    bar.center = (cx, y)
+                    s = pygame.Surface(bar.size, pygame.SRCALPHA)
+                    s.fill((*NEON_CYAN, int(28 + 22 * beat)))
+                    cv.blit(s, bar)
+                    pygame.draw.line(cv, NEON_CYAN, bar.topleft, bar.bottomleft, 3)
+                    pygame.draw.line(cv, NEON_MAGENTA, bar.topright, bar.bottomright, 3)
+                    if opt not in ("music", "sfx"):
+                        tsz = uiscale(7)
+                        lx, rx = bar.left + uiscale(14), bar.right - uiscale(14)
+                        pygame.draw.polygon(cv, NEON_CYAN, [(lx, y - tsz), (lx, y + tsz), (lx + tsz, y)])
+                        pygame.draw.polygon(cv, NEON_MAGENTA, [(rx, y - tsz), (rx, y + tsz), (rx - tsz, y)])
                 if opt == "music":
                     rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct(), compact=True)
                     self.pause_music_rect = bar_rect
@@ -1086,11 +1225,9 @@ class Game:
                     rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct(), compact=True)
                     self.pause_sfx_rect = bar_rect
                 else:
-                    text = ("> " if sel else "   ") + labels[opt]
-                    rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
+                    rect = draw_text(cv, F["big"], labels[opt], color, (cx, y), "center", alpha=pulse)
                 self.pause_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
                 y += uiscale(50)
-            
 
     def draw_slider_row(self, cv, cx, y, sel, color, pulse, label, pct, compact=False):
         """Disegna un'etichetta + uno slider orizzontale, e restituisce
@@ -1144,11 +1281,75 @@ class Game:
             self.on_settings_change()
 
     def draw_overlay(self, cv, title, color, x_offset=0):
-        ov = pygame.Surface((W * CELL + uiscale(16), H * CELL + uiscale(16)), pygame.SRCALPHA)
-        pygame.draw.rect(ov, (0, 0, 0, 170), ov.get_rect(), border_radius=uiscale(12))
-        cv.blit(ov, (BOARD_X - uiscale(8), BOARD_Y - uiscale(8)))
-        draw_text(cv, F["big"], title, color,
-                  (BOARD_X + W * CELL // 2 + x_offset, BOARD_Y + H * CELL // 2 - uiscale(40)), "center")
+        """Overlay retrofuturista (PAUSED / GAME OVER): pannello terminale neon sopra la board."""
+        t = self.t
+        vis = getattr(self, "visuals", None)
+        beat = max(getattr(vis, "kick", 0.0), getattr(vis, "bassnote", 0.0)) if vis else 0.0
+        w, h = W * CELL + uiscale(16), H * CELL + uiscale(16)
+        pos = (BOARD_X - uiscale(8), BOARD_Y - uiscale(8))
+        over = (title == "GAME OVER")
+        accent = NEON_MAGENTA if over else NEON_CYAN
+
+        key = ("overlay", w, h, over)
+        if key not in _menu_cache:
+            c = uiscale(20)
+            s = pygame.Surface((w, h), pygame.SRCALPHA)
+            pts = [(c, 0), (w - 1, 0), (w - 1, h - c), (w - c, h - 1), (0, h - 1), (0, c)]
+            pygame.draw.polygon(s, (5, 3, 20, 222), pts)
+            step = max(3, uiscale(3))
+            for yy in range(0, h, step):
+                pygame.draw.line(s, (0, 0, 0, 55), (0, yy), (w, yy))
+            pygame.draw.polygon(s, (*accent, 220), pts, 2)
+            tk = uiscale(24)
+            pygame.draw.line(s, NEON_MAGENTA if not over else NEON_CYAN, (c + 6, 0), (c + 6 + tk, 0), 4)
+            pygame.draw.line(s, NEON_MAGENTA if not over else NEON_CYAN, (w - 8 - tk, h - 1), (w - 8, h - 1), 4)
+            _menu_cache[key] = s
+        cv.blit(_menu_cache[key], pos)
+
+        draw_text(cv, F["tiny"], "SYS://GAME_OVER" if over else "SYS://PAUSE", accent,
+                  (pos[0] + uiscale(26), pos[1] + uiscale(10)), shadow=False, alpha=190)
+
+        # titolo cromato con glow
+        tkey = ("ovtitle", title, UI_SCALE)
+        if tkey not in _menu_cache:
+            if over:
+                stops = [(0.0, (255, 225, 225)), (0.45, (255, 110, 120)), (0.5, (60, 10, 40)),
+                         (0.56, (255, 60, 150)), (1.0, (255, 150, 210))]
+            else:
+                stops = [(0.0, (255, 255, 255)), (0.44, (120, 215, 255)), (0.50, (25, 30, 80)),
+                         (0.56, (255, 90, 200)), (1.0, (255, 190, 240))]
+            face = _gradient_text(title, F["big"], stops, spacing=uiscale(8))
+            _menu_cache[tkey] = (face, _blur_glow(face, NEON_MAGENTA, 5), _blur_glow(face, NEON_CYAN, 5))
+        face, g_mg, g_cy = _menu_cache[tkey]
+        cxo = BOARD_X + W * CELL // 2
+        r = face.get_rect(center=(cxo, BOARD_Y + H * CELL // 2 - uiscale(52)))
+        ga = int(95 + 70 * math.sin(t * 3.0) + 90 * beat)
+        for g in (g_mg, g_cy):
+            g.set_alpha(max(0, min(255, ga)))
+            cv.blit(g, r)
+        cv.blit(face, r)
+        tag = "// CONNECTION LOST" if over else "// SYSTEM HALTED"
+        if int(t * 1.8) % 2 == 0 or not over:
+            draw_text(cv, F["tiny"], tag, NEON_MAGENTA if not over else NEON_CYAN, (cxo, r.bottom - uiscale(6)),
+                      "center", shadow=False, alpha=int(150 + 80 * math.sin(t * 4)))
+
+
+    def draw_board_glow(self, cv, board_bg):
+        """Alone neon attorno alla board, che pulsa col ritmo della musica."""
+        vis = getattr(self, "visuals", None)
+        beat = max(getattr(vis, "kick", 0.0), getattr(vis, "bassnote", 0.0)) if vis else 0.0
+        w, h = board_bg.get_size()
+        pad = uiscale(16)
+        key = ("boardglow", w, h, UI_SCALE)
+        if key not in _cache:
+            s = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+            tmp = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.polygon(tmp, (255, 255, 255, 255), _chamfer(w, h, uiscale(18)), 4)
+            s.blit(tmp, (pad, pad))
+            _cache[key] = _blur_glow(s, (120, 135, 200), 3)
+        g = _cache[key]
+        g.set_alpha(int(max(0, min(255, 80 + 25 * math.sin(self.t * 2.0) + 150 * beat))))
+        cv.blit(g, (BOARD_X - uiscale(8) - pad, BOARD_Y - uiscale(8) - pad))
 
     def draw_panels(self, cv):
         # sinistra: HOLD + statistiche
@@ -1165,9 +1366,12 @@ class Game:
             ("LINES", str(self.lines), COLORS["S"]),
         )
         y = stats.y + uiscale(18)
-        for label, val, col in items:
-            draw_text(cv, F["small"], label, TEXT_DIM, (stats.x + uiscale(16), y), shadow=False)
+        for n_item, (label, val, col) in enumerate(items):
+            draw_text(cv, F["small"], "> " + label, TEXT_DIM, (stats.x + uiscale(16), y), shadow=False)
             draw_text(cv, F["big"], val, col, (stats.right - uiscale(16), y + uiscale(18)), "topright")
+            if n_item < len(items) - 1:
+                ly = y + uiscale(70)
+                pygame.draw.line(cv, (255, 255, 255, 30), (stats.x + uiscale(14), ly), (stats.right - uiscale(14), ly))
             y += uiscale(84)
 
         # now playing (nome traccia, scorrevole se troppo lungo per la colonna)
@@ -1207,16 +1411,57 @@ class Game:
 
     def draw_menu(self, cv):
         cx = WIN_W // 2
-        letters = "TETRIS"
-        names = ["I", "O", "T", "S", "Z", "L"]
-        total = sum(F["title"].size(c)[0] + uiscale(6) for c in letters)
-        x = cx - total // 2
-        for i, c in enumerate(letters):
-            img = F["title"].render(c, True, COLORS[names[i]])
-            y = uiscale(140) + math.sin(self.t * 2.5 + i * 0.7) * uiscale(10)
-            cv.blit(img, (x, y))
-            x += img.get_width() + uiscale(6)
-        draw_text(cv, F["mid"], "The classic, reimagined", TEXT_DIM, (cx, uiscale(275)), "center")
+        t = self.t
+        vis = getattr(self, "visuals", None)
+        beat = max(getattr(vis, "kick", 0.0), getattr(vis, "bassnote", 0.0)) if vis else 0.0
+        lo = getattr(vis, "lo", 0.3) if vis else 0.3
+        mid = getattr(vis, "mid", 0.3) if vis else 0.3
+        hi = getattr(vis, "hi", 0.3) if vis else 0.3
+        m = uiscale(24)
+
+        # terminal frame
+        cv.blit(_menu_frame(), (m, m))
+        draw_text(cv, F["tiny"], "SYS://TETRIS_2099", NEON_CYAN, (m + uiscale(30), m + uiscale(10)), shadow=False, alpha=190)
+        if int(t * 1.6) % 2 == 0:
+            draw_text(cv, F["tiny"], "GRID ONLINE \u25cf", NEON_MAGENTA, (WIN_W - m - uiscale(14), m + uiscale(10)),
+                      "topright", shadow=False, alpha=210)
+        else:
+            draw_text(cv, F["tiny"], "GRID ONLINE", NEON_MAGENTA, (WIN_W - m - uiscale(14), m + uiscale(10)),
+                      "topright", shadow=False, alpha=210)
+
+        # title: TETRIS (chrome) + 2099 (sunset neon)
+        a = _title_assets()
+        bob = math.sin(t * 1.8) * uiscale(5)
+        t1 = a["t1"]
+        r1 = t1.get_rect(center=(cx, uiscale(122) + bob))
+        ga = int(90 + 165 * beat)
+        for g, col_a in ((a["t1_mg"], ga), (a["t1_cy"], int(ga * 0.8))):
+            g.set_alpha(col_a)
+            cv.blit(g, r1.move(0, uiscale(3)))
+        if (t % 5.0) < 0.16:                     # glitch periodico: frange RGB
+            d = uiscale(7)
+            for img, dx in ((a["t1_red"], -d), (a["t1_cyan"], d)):
+                img.set_alpha(170)
+                cv.blit(img, r1.move(dx, 0))
+        cv.blit(t1, r1)
+
+        t2 = a["t2"]
+        r2 = t2.get_rect(center=(cx, uiscale(228) + bob * 0.6))
+        flick = 0.5 + 0.5 * math.sin(t * 37) * math.sin(t * 11.0)
+        a2 = 150 if flick > 0.93 else int(150 + 105 * beat)
+        a["t2_mg"].set_alpha(a2)
+        cv.blit(a["t2_mg"], r2)
+        cv.blit(t2, r2)
+
+        # horizon: line with a bright core
+        ly = r2.bottom - uiscale(10)
+        pygame.draw.line(cv, (*NEON_MAGENTA, 160), (cx - uiscale(230), ly), (cx + uiscale(230), ly), 2)
+
+        # typed tagline
+        full = ">> NEON GRID PROTOCOL // INSERT COIN"
+        n = min(len(full), int(t * 26))
+        cursor = "_" if (int(t * 2.2) % 2 == 0 or n < len(full)) else " "
+        draw_text(cv, F["small"], full[:n] + cursor, NEON_CYAN, (cx, ly + uiscale(26)), "center", shadow=False)
 
         opts = self.menu_options()
         labels = {"continua": "CONTINUE", "nuova": "NEW GAME", "opzioni": "OPTIONS",
@@ -1229,11 +1474,19 @@ class Game:
         self.menu_rects = []
         self.menu_music_rect = None
         self.menu_sfx_rect = None
-        y = uiscale(370)
+        y = uiscale(365)
         for i, opt in enumerate(opts):
             sel = (i == self.menu_sel)
-            pulse = int(150 + 105 * math.sin(self.t * 3.5)) if sel else 235
-            color = TEXT_BRIGHT if sel else TEXT_DIM
+            pulse = int(190 + 65 * math.sin(t * 5.0)) if sel else 235
+            color = NEON_CYAN if sel else NEON_VIOLET
+            if sel:                              # barra selezione neon
+                bar = pygame.Rect(0, 0, uiscale(400), uiscale(40))
+                bar.center = (cx, y)
+                s = pygame.Surface(bar.size, pygame.SRCALPHA)
+                s.fill((*NEON_CYAN, int(28 + 22 * beat)))
+                cv.blit(s, bar)
+                pygame.draw.line(cv, NEON_CYAN, bar.topleft, bar.bottomleft, 3)
+                pygame.draw.line(cv, NEON_MAGENTA, bar.topright, bar.bottomright, 3)
             if opt == "music":
                 rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "MUSIC", self.music_pct())
                 self.menu_music_rect = bar_rect
@@ -1241,17 +1494,39 @@ class Game:
                 rect, bar_rect = self.draw_slider_row(cv, cx, y, sel, color, pulse, "SFX", self.sfx_pct())
                 self.menu_sfx_rect = bar_rect
             else:
-                text = ("> " if sel else "   ") + labels[opt]
+                text = (">> " + labels[opt] + " <<") if sel else labels[opt]
                 rect = draw_text(cv, F["big"], text, color, (cx, y), "center", alpha=pulse)
             self.menu_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
-            y += uiscale(50)
+            y += uiscale(48)
 
-        draw_text(cv, F["small"], f"High score: {self.high:,}", COLORS["O"], (cx, y + uiscale(6)), "center")
+        draw_text(cv, F["small"], f"HI-SCORE  {self.high:,}", NEON_AMBER, (cx, y + uiscale(8)), "center", shadow=False)
 
-        # discreet signature, bottom-left
+        # bottom HUD: now playing + EQ reattivo alla musica
+        by = WIN_H - m - uiscale(14)
+        track = getattr(self.music, "current_track", None) if self.music else None
+        name = track.stem if track else "---"
+        if len(name) > 26:
+            name = name[:25] + "\u2026"
+        draw_text(cv, F["tiny"], "NOW PLAYING >> " + name.upper(), NEON_MAGENTA,
+                  (m + uiscale(30), by), "midleft", shadow=False, alpha=220)
+        bars, bw, gap, mh = 9, uiscale(5), uiscale(3), uiscale(22)
+        ex = WIN_W - m - uiscale(30) - bars * (bw + gap)
+        for k in range(bars):
+            band = lo if k < 3 else (mid if k < 6 else hi)
+            hgt = max(2, int(mh * min(1.0, (0.25 + 0.9 * band) * (0.65 + 0.35 * math.sin(t * 7 + k * 1.3)) + 0.4 * beat)))
+            col = NEON_CYAN if k < 3 else (NEON_VIOLET if k < 6 else NEON_MAGENTA)
+            pygame.draw.rect(cv, col, (ex + k * (bw + gap), by + mh // 2 - hgt, bw, hgt))
+
+        # discreet signature, bottom-left (outside the frame)
         draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.1", (70, 76, 100),
-                  (uiscale(10), WIN_H - uiscale(8)), "bottomleft", shadow=False, alpha=150)
-        
+                  (uiscale(10), WIN_H - uiscale(6)), "bottomleft", shadow=False, alpha=150)
+
+        # CRT: scanlines + barra di refresh che scorre
+        cv.blit(_scanlines(), (0, 0))
+        sy = int((t * uiscale(110)) % (WIN_H + uiscale(60))) - uiscale(30)
+        sweep = pygame.Surface((WIN_W, uiscale(26)), pygame.SRCALPHA)
+        sweep.fill((*NEON_CYAN, 12))
+        cv.blit(sweep, (0, sy))
 
 
 # ----------------------------------------------------------------------------
@@ -1271,7 +1546,7 @@ def main():
             surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         else:
             surf = pygame.display.set_mode((BASE_WIN_W, BASE_WIN_H), pygame.RESIZABLE)
-        pygame.display.set_caption("Tetris")
+        pygame.display.set_caption("TETRIS 2099")
         return surf
 
     screen = apply_display_mode()
