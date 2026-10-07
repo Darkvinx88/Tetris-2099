@@ -3,12 +3,6 @@
 A modern take on the classic, written in Python with pygame.
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/a12a3510-b4a0-4244-9348-2ab34179d490" />
-Main Menu
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/12f2597b-4718-475a-93b5-425816fcd5a3" />
-Pause Menu
-
-
-
 
 ## Features
 
@@ -21,6 +15,13 @@ Pause Menu
 - Automatic save/resume: closing the game or pausing stores your current run, and you can pick it up from the main menu ("Continue")
 - Main menu and pause menu (Resume, Restart, Options, Main menu, Quit), navigable with keyboard, mouse or gamepad
 - Options for music volume, effects volume, vibration and starting background, all saved between sessions
+
+## Screenshots
+
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/0e47af07-4e8d-44ea-b754-c73210803354" />
+Main HUD
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/12f2597b-4718-475a-93b5-425816fcd5a3" />
+Pause Menu
 
 ## Requirements
 
