@@ -1518,7 +1518,7 @@ class Game:
             pygame.draw.rect(cv, col, (ex + k * (bw + gap), by + mh // 2 - hgt, bw, hgt))
 
         # discreet signature, bottom-left (outside the frame)
-        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.1", (70, 76, 100),
+        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.2", (70, 76, 100),
                   (uiscale(10), WIN_H - uiscale(6)), "bottomleft", shadow=False, alpha=150)
 
         # CRT: scanlines + barra di refresh che scorre
