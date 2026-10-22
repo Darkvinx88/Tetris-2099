@@ -10,6 +10,7 @@ import pygame
 from joypad import JoypadManager
 from music import MusicManager
 from visuals import VisualsManager, MODES
+import modes as gm
 
 # ----------------------------------------------------------------------------
 # Costanti
@@ -74,6 +75,8 @@ for _name, (_n, _cells) in BASE.items():
     for _ in range(3):
         _rots.append([(_n - 1 - y, x) for x, y in _rots[-1]])
     SHAPES[_name] = _rots
+
+gm.register_pieces(SHAPES, COLORS)   # pezzi speciali (bomba/laser/glitch) di 2099
 
 # Wall kick SRS (coordinate con y verso l'alto, come nel wiki: si inverte y quando si applicano)
 KICKS_JLSTZ = {
@@ -307,10 +310,11 @@ def load_settings():
             "sfx_volume": max(0.0, min(1.0, float(data.get("sfx_volume", 0.6)))),
             "vibration": bool(data.get("vibration", True)),
             "background": data.get("background") if data.get("background") in MODES else MODES[0],
+            "mode": data.get("mode") if data.get("mode") in gm.MODE_ORDER else "classic",
         }
     except (OSError, ValueError, AttributeError, TypeError):
         return {"fullscreen": False, "volume": 0.6, "sfx_volume": 0.6,
-                "vibration": True, "background": MODES[0]}
+                "vibration": True, "background": MODES[0], "mode": "classic"}
 
 
 def save_settings(settings):
@@ -493,6 +497,9 @@ class Game:
         self.zoom = 0.0
         self.aber = 0.0
         self._track_save = False   # evita di toccare il file durante l'init "a vuoto"
+        self.records = gm.Records()      # classifiche delle modalita' extra
+        self.mode_id = "classic"         # modalita' scelta nel menu (salvata nei settings)
+        self.mode = None
         self.reset()
         self.state = "menu"
         self.has_save = SAVESTATE_FILE.exists()
@@ -522,6 +529,7 @@ class Game:
             "hold": self.hold, "hold_used": self.hold_used,
             "piece": {"name": p.name, "rot": p.rot, "x": p.x, "y": p.y},
             "state": self.state, "clear_rows": self.clear_rows,
+            "mode": {"id": self.mode_id, "data": self.mode.to_dict()},
         }
         save_savestate(data)
         self.has_save = True
@@ -538,6 +546,12 @@ class Game:
             self.reset()
             return
         try:
+            md = data.get("mode") or {}
+            mid = md.get("id", "classic")
+            self.mode_id = mid if mid in gm.MODE_ORDER else "classic"
+            self.mode = gm.create_mode(self.mode_id)
+            self.mode.from_dict(md.get("data") or {})
+            self.mode.countdown = 0.0
             self.grid = [[tuple(c) if c else None for c in row] for row in data["grid"]]
             self.score, self.lines = data["score"], data["lines"]
             self.disp_score = float(self.score)
@@ -567,7 +581,7 @@ class Game:
         if self.menu_in_options:
             return ["music", "sfx", "vibration", "background", "esci"]
         base = ["continua"] if self.has_save else []
-        return base + ["nuova", "opzioni", "esci"]
+        return base + ["nuova", "mode", "opzioni", "esci"]
 
     def pause_options(self):
         if self.pause_in_options:
@@ -623,8 +637,15 @@ class Game:
             self.start_bg = MODES[(i + step) % len(MODES)]
         self.on_settings_change()
 
+    def cycle_mode(self, step=1):
+        self.mode_id = gm.cycle_mode_id(self.mode_id, step)
+        self.sfx.play("hold")
+        self.on_settings_change()
+
     def menu_activate(self, action):
-        if action == "vibration":
+        if action == "mode":
+            self.cycle_mode(1)
+        elif action == "vibration":
             self.toggle_vibration()
         elif action == "background":
             self.cycle_background(1)
@@ -679,6 +700,7 @@ class Game:
     # ---- setup ----
     def reset(self):
         self.clear_save()
+        self.mode = gm.create_mode(self.mode_id)
         self.grid = [[None] * W for _ in range(H + HID)]
         self.score = self.lines = 0
         self.disp_score = 0.0
@@ -695,16 +717,17 @@ class Game:
         self.squash.clear()
         self.zoom = self.aber = 0.0
         self.state = "play"
+        self.mode.setup(self)
         self.spawn()
 
     def _draw(self):
         if not self.bag:                      # 7-bag: distribuzione equa dei pezzi
-            self.bag = list(SHAPES)
+            self.bag = list(BASE)
             random.shuffle(self.bag)
         return self.bag.pop()
 
     def level(self):
-        return self.lines // 10 + 1
+        return self.mode.level(self)
 
     def spawn(self, name=None):
         if name is None:
@@ -839,6 +862,8 @@ class Game:
         if all(y < HID for _, y in cells):     # lock-out: tutto sopra la zona visibile
             self.game_over()
             return
+        self.mode.on_lock(self, p)
+        self.mode.after_write(self, p, cells)
 
         tspin = self._tspin_type()
         full = [y for y in range(H + HID) if all(c is not None for c in self.grid[y])]
@@ -889,6 +914,7 @@ class Game:
             self._popup("PERFECT CLEAR", (255, 255, 255), -30)
         self.score += pts
         self.lines += n
+        self.mode.on_lines(self, n, full, tspin, perfect)
         if self.level() > lvl:
             self._popup(f"LEVEL {self.level()}", COLORS["S"], -60)
             self.sfx.play("level")
@@ -909,18 +935,35 @@ class Game:
         self.grid = [[None] * W for _ in range(len(gone))] + kept
         self.clear_rows = []
         self.hold_used = False
+        if self.mode.done:
+            self.end_mode()
+            return
         self.state = "play"
         self.spawn()
 
     def game_over(self):
+        if self.mode.on_top_out(self):        # es. Zen: svuota il campo e continua
+            self.hold_used = False
+            self.spawn()
+            return
+        self.mode.done = self.mode.done or "lose"
+        self._end(False)
+
+    def end_mode(self):
+        self._end(self.mode.done == "win")
+
+    def _end(self, win):
+        self.mode.finish(self)
         self.state = "over"
         self.hdir = 0
-        self.sfx.play("over")
+        self.sfx.play("tetris" if win else "over")
         self.shake = 10
         self.finalize_high()
         self.clear_save()
 
     def finalize_high(self):
+        if not self.mode.counts_high:
+            return
         if self.score > self.high:
             self.high = self.score
             self.new_high = True
@@ -934,6 +977,9 @@ class Game:
             vy = math.sin(a) * sp - (200 if up else 120)
             life = random.uniform(0.4, 0.9)
             self.particles.append([x, y, math.cos(a) * sp, vy, life, life, color])
+
+    def burst_cell(self, x, y, color, count=3):
+        self._burst(BOARD_X + x * CELL + CELL / 2, BOARD_Y + (y - HID) * CELL + CELL / 2, color, count)
 
     def _popup(self, text, color, dy):
         if text:
@@ -965,12 +1011,20 @@ class Game:
         if abs(self.score - self.disp_score) < 1:
             self.disp_score = self.score
 
+        if self.state in ("play", "clearing") and not self.paused:
+            self.mode.update(self, dt)
+            if self.mode.done and self.state == "play":
+                self.end_mode()
+                return
+
         if self.state == "clearing":
             self.clear_t += dt
             if self.clear_t >= CLEAR_TIME:
                 self._finish_clear()
             return
         if self.state != "play" or self.paused:
+            return
+        if self.mode.countdown > 0:
             return
 
         k = math.exp(-dt * 38)                 # il pezzo "scivola" verso la posizione logica
@@ -1002,7 +1056,7 @@ class Game:
 
         soft = any(keys[k] for k in KEYS_DOWN)
         lvl = min(self.level(), 20)
-        g = max(0.01, (0.8 - (lvl - 1) * 0.007) ** (lvl - 1))
+        g = max(0.01, (0.8 - (lvl - 1) * 0.007) ** (lvl - 1)) / self.mode.gravity_mult(self)
         interval = min(g, 0.04) if soft else g
         self.fall_t += dt
         while self.fall_t >= interval:
@@ -1040,6 +1094,10 @@ class Game:
                 self.adjust_sfx(-5)
             elif opts[self.menu_sel] == "sfx" and key in KEYS_R:
                 self.adjust_sfx(5)
+            elif opts[self.menu_sel] == "mode" and key in KEYS_L:
+                self.cycle_mode(-1)
+            elif opts[self.menu_sel] == "mode" and key in KEYS_R:
+                self.cycle_mode(1)
             elif opts[self.menu_sel] == "vibration" and (key in KEYS_L or key in KEYS_R):
                 self.toggle_vibration()
             elif opts[self.menu_sel] == "background" and key in KEYS_L:
@@ -1048,6 +1106,9 @@ class Game:
                 self.cycle_background(1)
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.menu_activate(opts[self.menu_sel])
+            return
+        if self.state == "over" and key == pygame.K_ESCAPE:
+            self.go_main_menu()
             return
         if key == pygame.K_r or (self.state == "over" and key in (pygame.K_RETURN, pygame.K_SPACE)):
             self.reset()
@@ -1080,7 +1141,9 @@ class Game:
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.pause_activate(opts[self.pause_sel])
             return
-        if self.state != "play" or self.paused:
+        if self.state != "play" or self.paused or self.mode.countdown > 0:
+            return
+        if self.mode.keydown(self, key):
             return
         if key in KEYS_L:
             self.hdir, self.das_t, self.arr_t = -1, 0.0, 0.0
@@ -1103,6 +1166,8 @@ class Game:
             self.draw_menu(cv)
             return
         self.draw_panels(cv)
+        draw_text(cv, F["tiny"], "MODE // " + self.mode.long_name, TEXT_DIM,
+                  (BOARD_X + W * CELL // 2, uiscale(4)), "midtop", shadow=False)
         cv.blit(board_bg, (BOARD_X - uiscale(8), BOARD_Y - uiscale(8)))
         self.draw_board_glow(cv, board_bg)
 
@@ -1174,20 +1239,29 @@ class Game:
             s = max(2, int(7 * k))
             pygame.draw.rect(cv, (*shade(col, 1.2), int(255 * k)), (x - s / 2, y - s / 2, s, s), border_radius=2)
 
+        self.mode.post_board(self, cv, pygame.Rect(BOARD_X - uiscale(8), BOARD_Y - uiscale(8),
+                                                   W * CELL + uiscale(16), H * CELL + uiscale(16)))
+
         # popup testuali
         cx, cy = BOARD_X + W * CELL // 2, BOARD_Y + H * CELL // 2 - uiscale(40)
         for text, color, dy, t in self.popups:
             a = int(255 * max(0.0, 1 - max(0.0, t - 0.7) / 0.6))
             draw_text(cv, F["mid"], text, color, (cx, cy + dy - t * uiscale(40)), "center", alpha=a)
 
+        if self.state == "play" and not self.paused:
+            self.mode.draw_overlay(self, cv)
+
         # overlay
-        if self.state == "over":
+        if self.state == "over" and self.mode.result:
+            self.draw_overlay(cv, self.mode.result["title"], TEXT_BRIGHT)
+            self.mode.draw_result(self, cv, cx, cy)
+        elif self.state == "over":
             self.draw_overlay(cv, "GAME OVER", (255, 100, 100))
             draw_text(cv, F["mid"], f"Score  {self.score:,}", TEXT_BRIGHT, (cx, cy + uiscale(50)), "center")
             if self.new_high:
                 draw_text(cv, F["mid"], "NEW HIGH SCORE!", COLORS["O"], (cx, cy + uiscale(84)), "center")
             pulse = int(140 + 115 * math.sin(self.t * 4))
-            draw_text(cv, F["small"], "Press ENTER to play again", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
+            draw_text(cv, F["small"], "ENTER play again   /   ESC menu", TEXT_BRIGHT, (cx, cy + uiscale(124)), "center", alpha=pulse)
         elif self.paused:
             self.draw_overlay(cv, "PAUSED", TEXT_BRIGHT)
             opts = self.pause_options()
@@ -1306,7 +1380,7 @@ class Game:
             _menu_cache[key] = s
         cv.blit(_menu_cache[key], pos)
 
-        draw_text(cv, F["tiny"], "SYS://GAME_OVER" if over else "SYS://PAUSE", accent,
+        draw_text(cv, F["tiny"], "SYS://GAME_OVER" if over else ("SYS://PAUSE" if title == "PAUSED" else "SYS://RESULT"), accent,
                   (pos[0] + uiscale(26), pos[1] + uiscale(10)), shadow=False, alpha=190)
 
         # titolo cromato con glow
@@ -1328,7 +1402,7 @@ class Game:
             g.set_alpha(max(0, min(255, ga)))
             cv.blit(g, r)
         cv.blit(face, r)
-        tag = "// CONNECTION LOST" if over else "// SYSTEM HALTED"
+        tag = "// CONNECTION LOST" if over else ("// SYSTEM HALTED" if title == "PAUSED" else "// RUN COMPLETE")
         if int(t * 1.8) % 2 == 0 or not over:
             draw_text(cv, F["tiny"], tag, NEON_MAGENTA if not over else NEON_CYAN, (cxo, r.bottom - uiscale(6)),
                       "center", shadow=False, alpha=int(150 + 80 * math.sin(t * 4)))
@@ -1359,7 +1433,7 @@ class Game:
             draw_preview(cv, self.hold, hold.centerx, hold.centery + uiscale(10), uiscale(24), dimmed=self.hold_used)
         stats = pygame.Rect(uiscale(20), BOARD_Y + uiscale(137), uiscale(160), H * CELL - uiscale(129))
         panel(cv, stats)
-        items = (
+        items = self.mode.hud_items(self) or (
             ("SCORE", f"{int(self.disp_score):,}", TEXT_BRIGHT),
             ("BEST", f"{max(self.high, self.score):,}", COLORS["O"]),
             ("LEVEL", str(self.level()), COLORS["I"]),
@@ -1368,7 +1442,8 @@ class Game:
         y = stats.y + uiscale(18)
         for n_item, (label, val, col) in enumerate(items):
             draw_text(cv, F["small"], "> " + label, TEXT_DIM, (stats.x + uiscale(16), y), shadow=False)
-            draw_text(cv, F["big"], val, col, (stats.right - uiscale(16), y + uiscale(18)), "topright")
+            vfont = F["big"] if F["big"].size(val)[0] <= stats.width - uiscale(32) else F["mid"]
+            draw_text(cv, vfont, val, col, (stats.right - uiscale(16), y + uiscale(18) + (0 if vfont is F["big"] else uiscale(4))), "topright")
             if n_item < len(items) - 1:
                 ly = y + uiscale(70)
                 pygame.draw.line(cv, (255, 255, 255, 30), (stats.x + uiscale(14), ly), (stats.right - uiscale(14), ly))
@@ -1405,7 +1480,7 @@ class Game:
             draw_preview(cv, name, nxt.centerx, nxt.y + uiscale(66) + i * uiscale(62), size)
         help_r = pygame.Rect(nx, nxt.bottom + uiscale(12), uiscale(160), H * CELL + uiscale(8) - nxt.height - uiscale(12))
         panel(cv, help_r, "CONTROLS")
-        lines = ("← → move", "↑ X rotate", "Z rotate back", "↓ soft drop", "SPACE hard drop", "C hold", "P pause  M audio")
+        lines = ("← → move", "↑ X rotate", "Z rotate back", "↓ soft drop", "SPACE hard drop", "C hold", "P pause  M audio") + tuple(self.mode.hints())
         for i, l in enumerate(lines):
             draw_text(cv, F["tiny"], l, TEXT_DIM, (help_r.x + uiscale(10), help_r.y + uiscale(36) + i * uiscale(22)), shadow=False)
 
@@ -1467,7 +1542,8 @@ class Game:
         labels = {"continua": "CONTINUE", "nuova": "NEW GAME", "opzioni": "OPTIONS",
                   "music": "MUSIC", "sfx": "SFX", "esci": "QUIT",
                   "vibration": "VIBRATION: " + ("ON" if self.vibration else "OFF"),
-                  "background": "BACKGROUND: " + self.start_bg.upper()}
+                  "background": "BACKGROUND: " + self.start_bg.upper(),
+                  "mode": "MODE: " + gm.mode_name(self.mode_id)}
         if self.menu_in_options:
             labels["esci"] = "BACK"
         self.menu_sel = min(self.menu_sel, len(opts) - 1)
@@ -1499,7 +1575,12 @@ class Game:
             self.menu_rects.append((rect.inflate(uiscale(40), uiscale(14)), opt, i))
             y += uiscale(48)
 
-        draw_text(cv, F["small"], f"HI-SCORE  {self.high:,}", NEON_AMBER, (cx, y + uiscale(8)), "center", shadow=False)
+        rec_txt = f"HI-SCORE  {self.high:,}" if self.mode_id == "classic" else self.records.label(self.mode_id)
+        if rec_txt:
+            draw_text(cv, F["small"], rec_txt, NEON_AMBER, (cx, y + uiscale(8)), "center", shadow=False)
+        if not self.menu_in_options:
+            draw_text(cv, F["tiny"], gm.mode_desc(self.mode_id), NEON_VIOLET, (cx, y + uiscale(32)),
+                      "center", shadow=False, alpha=200)
 
         # bottom HUD: now playing + EQ reattivo alla musica
         by = WIN_H - m - uiscale(14)
@@ -1518,7 +1599,7 @@ class Game:
             pygame.draw.rect(cv, col, (ex + k * (bw + gap), by + mh // 2 - hgt, bw, hgt))
 
         # discreet signature, bottom-left (outside the frame)
-        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.2", (70, 76, 100),
+        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.3", (70, 76, 100),
                   (uiscale(10), WIN_H - uiscale(6)), "bottomleft", shadow=False, alpha=150)
 
         # CRT: scanlines + barra di refresh che scorre
@@ -1564,7 +1645,8 @@ def main():
 
     def persist_settings():
         save_settings({"fullscreen": fullscreen, "volume": music.volume, "sfx_volume": game.sfx.volume,
-                       "vibration": game.vibration, "background": game.start_bg})
+                       "vibration": game.vibration, "background": game.start_bg,
+                       "mode": game.mode_id})
 
     def toggle_fullscreen():
         nonlocal screen, fullscreen
@@ -1606,6 +1688,8 @@ def main():
     joypad.attach_sfx(game.sfx)
     game.joypad, game.visuals = joypad, visuals
     game.vibration = settings["vibration"]
+    game.mode_id = settings["mode"]
+    gm.bind_ui(F, draw_text, uiscale, lambda: (BOARD_X, BOARD_Y, CELL))
     game.start_bg = visuals.mode        # se plasma non e' disponibile (no numpy) cade su synthwave
 
     def quit_game():
