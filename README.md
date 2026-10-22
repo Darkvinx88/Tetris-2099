@@ -2,17 +2,20 @@
 
 A modern take on the classic, written in Python with pygame.
 
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/a12a3510-b4a0-4244-9348-2ab34179d490" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/556d0c26-9fe8-4867-83f3-95d902926c25" />
+
 
 ## Features
 
 - SRS rotation with wall kicks, ghost piece, hold and a next-queue preview
 - Score, levels, combos and back-to-back tracking, with a persisted high score
+- **7 game modes**: Classic, Sprint 40L, Ultra 2:00, Marathon, Zen, Cheese Race and 2099 Chaos, with timers, goals and local Top 5 leaderboards
+- **2099 Chaos** mode with random events: gravity flip, glitched pieces, bombs, lasers and overclock
 - Synthesized sound effects, plus background music from a playlist (chiptune trackers supported)
 - Audio-reactive animated backgrounds (synthwave, starfield, plasma, squares) that follow the beat of the current track and speed up with your level
 - Keyboard, mouse and gamepad support, with rumble feedback on supported controllers
 - Windowed or fullscreen mode (`F11`) with a responsive layout
-- Automatic save/resume: closing the game or pausing stores your current run, and you can pick it up from the main menu ("Continue")
+- Automatic save/resume: closing the game or pausing stores your current run (including the game mode and its timers), and you can pick it up from the main menu ("Continue")
 - Main menu and pause menu (Resume, Restart, Options, Main menu, Quit), navigable with keyboard, mouse or gamepad
 - Options for music volume, effects volume, vibration and starting background, all saved between sessions
 
@@ -57,6 +60,32 @@ sudo dnf install libopenmpt
 sudo pacman -S libopenmpt
 ```
 
+## Game modes
+
+Pick a mode from the **MODE** row in the main menu (right under **NEW GAME**): use ←/→ (or Enter, or a click) to change it, then select **NEW GAME** to start. The selected mode is remembered between sessions.
+
+| Mode | Goal | Leaderboard |
+|---|---|---|
+| **Classic** | Endless stacking: survive as long as you can | High score |
+| **Sprint 40L** | Clear 40 lines as fast as you can (3-2-1 countdown) | Best time |
+| **Ultra 2:00** | Score as much as possible in 2 minutes | Best score |
+| **Marathon** | 15 levels: clear 150 lines to win | Best score |
+| **Zen** | No game over, the board clears itself when it fills up. Use `+` / `-` to change the level and `B` to change the background: perfect for trying out backgrounds and music | None |
+| **Cheese Race** | Dig through 10 garbage rows as fast as you can | Best time |
+| **2099 Chaos** | Classic scoring, with a random event every 7-11 pieces | Best score |
+
+### 2099 Chaos events
+
+| Event | Effect |
+|---|---|
+| **Gravity Flip** | The board flips upside down for 9 seconds and gravity seems to pull upwards |
+| **Glitch Storm** | A couple of upcoming pieces become glitched, with odd or disconnected shapes |
+| **Bomb** | An orange single-block piece that blasts a 5x5 area when it lands |
+| **Laser** | A white single-block piece that clears the whole row it lands on |
+| **Overclock** | Gravity runs 2.5x faster for 8 seconds |
+
+The timed and goal-based modes show a Top 5 leaderboard and a "NEW RECORD!" highlight on the results screen. Press `Enter` to retry or `Esc` to go back to the main menu.
+
 ## Controls
 
 ### Keyboard
@@ -69,15 +98,16 @@ sudo pacman -S libopenmpt
 | Z | Rotate (opposite direction) |
 | Space | Hard drop |
 | C / Shift | Hold |
-| P / Esc | Pause |
+| P / Esc | Pause (on the results / game over screen: Esc returns to the main menu) |
 | R | Restart |
 | M | Toggle sound effects |
+| + / - | Change level (Zen mode only) |
 | B / Shift+B | Next / previous background (this session only) |
 | F3 | Background debug HUD |
 | [ / ] | Shift the beat sync earlier / later by 10 ms |
 | F11 | Toggle fullscreen |
 
-In the main menu and pause menu: ↑/↓ to navigate, Enter/Space to confirm, ←/→ to adjust sliders and switches, or click with the mouse.
+In the main menu and pause menu: ↑/↓ to navigate, Enter/Space to confirm, ←/→ to adjust sliders, switches and the game mode, or click with the mouse.
 
 ### Gamepad
 
@@ -115,7 +145,7 @@ Music and SFX are also available from the pause menu. All options are saved in `
 
 ## Music
 
-Drop your tracks into the `music` folder and they are picked up automatically and played in shuffled order. Supported formats: `.it`, `.xm`, `.s3m`, `.mod`, `.ogg`, `.mp3`, `.wav`, `.flac`.
+Drop your tracks into the `music` folder and they are picked up automatically and played in shuffled order. Supported formats: `.it`, `.xm`, `.s3m`, `.mod`, `.ogg`, `.mp3`, `.wav`, `.flac`. The game ships with a set of royalty-free tracks.
 
 Tracker formats (`.it`, `.xm`, `.s3m`, `.mod`) rely on the MOD player bundled with SDL2_mixer, which is included in most pygame builds. If a file fails to load, the game skips it and moves on; converting it to `.ogg` is the usual workaround.
 
@@ -136,6 +166,7 @@ For ogg/mp3/wav/flac the beat is estimated from the audio. For trackers, libopen
 
 ```
 tetris.py            main game
+modules/modes.py     game modes (Sprint, Ultra, Marathon, Zen, Cheese, 2099) and leaderboards
 modules/joypad.py    gamepad support and rumble
 modules/music.py     background music playlist
 modules/visuals.py   audio-reactive backgrounds
@@ -146,9 +177,10 @@ music/               your tracks
 
 The game creates these files next to the script:
 
-- `savestate.json`: current run in progress (updated during play, removed on game over)
-- `highscore.json`: personal best score
-- `settings.json`: preferences such as fullscreen, music and effects volume, vibration and starting background
+- `savestate.json`: current run in progress, with its game mode (updated during play, removed on game over)
+- `highscore.json`: personal best score (Classic mode)
+- `records.json`: Top 10 results for Sprint, Ultra, Marathon, Cheese Race and 2099 Chaos
+- `settings.json`: preferences such as fullscreen, music and effects volume, vibration, starting background and selected game mode
 
 The audio analysis cache is stored separately, in `.visuals_cache` inside the music folder.
 
