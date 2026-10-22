@@ -1,6 +1,6 @@
 @echo off
 echo ================================
-echo    Tetris - A modern version
+echo    Tetris 2099 - A modern version
 echo ================================
 echo.
 
@@ -63,6 +63,6 @@ echo [OK] Dependencies installed.
 echo.
 echo ================================
 echo   Installation complete!
-echo   Use Tetris.exe to launch the game.
+echo   Use Tetris.bat to launch the game.
 echo ================================
 pause
