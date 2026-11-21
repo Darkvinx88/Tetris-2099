@@ -1,6 +1,6 @@
 # Tetris 2099
 
-A modern take on the classic, written in Python with pygame.
+A modern take on the classic, written in Python with pygame. **Fully portable on Windows and Linux**: the release packages ship with their own Python, so there is nothing to install.
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/de6adf55-9e66-4431-8944-a83b43ec4951" />
 
@@ -8,6 +8,7 @@ A modern take on the classic, written in Python with pygame.
 
 ## Features
 
+- **Portable on Windows and Linux**: unzip the folder and play, no installation needed (it can run from a USB stick too)
 - SRS rotation with wall kicks, ghost piece, hold and a next-queue preview
 - Score, levels, combos and back-to-back tracking, with a persisted high score
 - **8 game modes**: Classic, Sprint 40L, Ultra 2:00, Marathon, Zen, Cheese Race, 2099 Chaos and **Rhythm**, with timers, goals and local Top 5 leaderboards
@@ -34,21 +35,35 @@ Main HUD
 
 Pause Menu
 
-## Requirements
-
-- Python 3.10+
-- pygame-ce (`pip install pygame-ce`)
-- numpy (`pip install numpy`): needed for the audio analysis, the plasma and aurora backgrounds and the shockwave distortion. The game runs without it, just without beat-reactive visuals, plasma, aurora and the board distortion (shockwaves still show their glowing rings), and Rhythm mode falls back to a metronome
-- libopenmpt (optional): a system library that gives exact beat sync on tracker music (`.it`, `.xm`, `.s3m`, `.mod`). Without it the game works the same, and trackers just use the background without exact sync
-
 ## Run
 
-Set up the virtual environment with `installer.bat`, then start the game with `tetris.bat`.
-On Linux just use `installer.sh`, then start the game with `tetris.sh`.
+### Portable release (Windows and Linux)
+
+Both release packages are self-contained: they include their own Python with `pygame-ce` and `numpy` already installed, so you do not need to install anything on the PC.
+
+**Windows**
+
+1. Unzip the Windows package anywhere (a USB stick works too).
+2. Double-click `Tetris 2099.exe`.
+
+The package already includes the libopenmpt DLLs, so exact beat sync on tracker music works out of the box.
+
+**Linux**
+
+1. Extract the Linux package anywhere.
+2. Start the game with `tetris.sh` (double-click it if your file manager is set to run executable files, or run `./tetris.sh` from a terminal). If it is not executable yet: `chmod +x tetris.sh`.
+
+On Linux, libopenmpt is optional and comes from your system (see below). 
+
+The portable folders contain their own Python, so the Windows and Linux packages are separate: use the one that matches your system (the Linux package is built for x86_64 PCs).
+
+### From source
+
+If you run the game from a plain clone of the repository instead, set up the virtual environment with `installer.bat` (Windows) or `installer.sh` (Linux), then start the game with `tetris.bat` or `tetris.sh`.
 
 The Linux installer checks for libopenmpt and, if it is missing, offers to install it with your package manager (apt, pacman, dnf, zypper). On immutable systems such as Bazzite it prints the `rpm-ostree` command instead. You can skip this step: it is optional.
 
-On Windows, the release package already includes the libopenmpt DLLs. If you run the game from a plain clone of the repository instead, download libopenmpt from [lib.openmpt.org](https://lib.openmpt.org/) and put `libopenmpt.dll` (and the DLLs it ships with) next to `visuals.py`.
+On Windows, if you run from a plain clone, download libopenmpt from [lib.openmpt.org](https://lib.openmpt.org/) and put `libopenmpt.dll` (and the DLLs it ships with) next to `visuals.py`.
 
 Or, if you prefer doing it by hand:
 
@@ -67,6 +82,21 @@ sudo dnf install libopenmpt
 # Arch
 sudo pacman -S libopenmpt
 ```
+
+## Requirements
+
+Only needed when running from source. The portable releases already include everything except the optional system libopenmpt on Linux.
+
+- Python 3.10+
+- pygame-ce (`pip install pygame-ce`)
+- numpy (`pip install numpy`): needed for the audio analysis, the plasma and aurora backgrounds and the shockwave distortion. The game runs without it, just without beat-reactive visuals, plasma, aurora and the board distortion (shockwaves still show their glowing rings), and Rhythm mode falls back to a metronome
+- libopenmpt (optional): a library that gives exact beat sync on tracker music (`.it`, `.xm`, `.s3m`, `.mod`). Without it the game works the same, and trackers just use the background without exact sync
+
+## Portable notes
+
+- The game works out of the box from any folder: all paths are resolved from the location of the game files, so you can move or rename the folder, or copy it to another PC or a USB stick.
+- Settings, high score, records and the saved run are written inside the game folder, so they travel with it. The folder must therefore be writable (it will not work from read-only locations such as `C:\Program Files`).
+- Gamepads can be plugged in or removed while the game is running.
 
 ## Game modes
 
@@ -179,7 +209,7 @@ These effects work in every game mode:
 
 ## Music
 
-Drop your tracks into the `music` folder and they are picked up automatically and played in shuffled order. Supported formats: `.it`, `.xm`, `.s3m`, `.mod`, `.ogg`, `.mp3`, `.wav`, `.flac`. The game ships with a set of royalty-free tracks.
+Drop your tracks into the `assets/music` folder and they are picked up automatically and played in shuffled order. Supported formats: `.it`, `.xm`, `.s3m`, `.mod`, `.ogg`, `.mp3`, `.wav`, `.flac`. The game ships with a set of royalty-free tracks.
 
 Tracker formats (`.it`, `.xm`, `.s3m`, `.mod`) rely on the MOD player bundled with SDL2_mixer, which is included in most pygame builds. If a file fails to load, the game skips it and moves on; converting it to `.ogg` is the usual workaround.
 
@@ -199,20 +229,9 @@ Bass drives the pulse, mids shift the colours, highs add sparkle, and the speed 
 
 For ogg/mp3/wav/flac the beat is estimated from the audio. For trackers, libopenmpt reads the notes of every channel and instruments are classified by sample name (kick, snare, hat, bass...), so the hits are exact. Where names say nothing, it falls back to analysing the rendered audio.
 
-## Project layout
-
-```
-tetris.py            main game, line-clear shards, shockwaves and spectrum
-modules/modes.py     game modes (Sprint, Ultra, Marathon, Zen, Cheese, 2099, Rhythm) and leaderboards
-modules/joypad.py    gamepad support and rumble
-modules/music.py     background music playlist
-modules/visuals.py   audio-reactive backgrounds, spectrum and beat detection
-music/               your tracks
-```
-
 ## Save data
 
-The game creates these files next to the script:
+The game creates these files next to the script, inside `modules/`, so they stay with the portable folder:
 
 - `savestate.json`: current run in progress, with its game mode (updated during play, removed on game over)
 - `highscore.json`: personal best score (Classic mode)
