@@ -5,19 +5,6 @@ Ogni modalita' e' una piccola classe (Mode) con degli "hook" che Game chiama
 nei punti giusti (reset, lock, righe completate, update, disegno...). La
 logica di gioco di base (SRS, DAS/ARR, hold, T-Spin...) resta in tetris.py.
 
-Modalita'
----------
-  classic   Infinita, come prima.
-  sprint    40 linee il piu' in fretta possibile (classifica a tempo).
-  ultra     2 minuti, piu' punti possibile (classifica a punteggio).
-  marathon  15 livelli / 150 linee: se le completi hai vinto.
-  zen       Nessun game over (il campo si svuota). +/- cambia livello:
-            ideale per provare sfondi (B) e musica.
-  cheese    10 righe sporche da scavare, vince chi finisce prima.
-  2099      Caos: eventi casuali ogni 7-11 pezzi: gravita' invertita,
-            pezzi glitchati, bombe (area 5x5), laser (riga intera),
-            overclock (caduta x2.5).
-
 Classifiche: records.json accanto al gioco (top 10 per modalita', ne mostra 5).
 
 Integrazione in tetris.py (gia' applicata nel file fornito):
@@ -103,7 +90,8 @@ def register_pieces(shapes, colors):
 # Classifiche
 # ----------------------------------------------------------------------------
 class Records:
-    KINDS = {"sprint": "time", "cheese": "time", "ultra": "score", "marathon": "score", "2099": "score"}
+    KINDS = {"sprint": "time", "cheese": "time", "ultra": "score", "marathon": "score", "2099": "score",
+             "rhythm": "score"}
 
     def __init__(self, path=RECORDS_FILE):
         self.path = Path(path)
@@ -170,6 +158,7 @@ class Mode:
     COUNTDOWN = 0.0          # secondi di 3-2-1 prima di iniziare
     counts_high = False      # usa l'high score globale (highscore.json)
     has_result = False       # a fine partita mostra schermata risultati + classifica
+    spectrum_bottom = True   # l'equalizzatore attorno al campo usa anche il lato inferiore
 
     def __init__(self):
         self.elapsed = 0.0
@@ -618,6 +607,8 @@ class Mode2099(Mode):
                     game.burst_cell(x, y, c or (255, 150, 40), 2)
         game.score += destroyed * 15 * game.level()
         game.shake, game.aber, game.zoom = 14, 1.0, 0.02
+        bx, by, cell = UI.geom()
+        game.shock(bx + (cx + 0.5) * cell, by + (cy - HIDDEN + 0.5) * cell, 1.3, (255, 150, 40))
         game.sfx.play("hard")
         game.sfx.play("tetris")
         game._popup("BOOM!", (255, 120, 40), 0)
@@ -691,11 +682,220 @@ class Mode2099(Mode):
         self.next_in = int(d.get("next_in", 8))
 
 
+
+# ----------------------------------------------------------------------------
+# Rhythm: bloccare i pezzi a tempo con la musica
+# ----------------------------------------------------------------------------
+class RhythmMode(Mode):
+    id, name, long_name = "rhythm", "RHYTHM", "RHYTHM"
+    desc = "LOCK PIECES ON THE BEAT. KEEP THE GROOVE."
+    COUNTDOWN = 3.0
+    has_result = True
+    spectrum_bottom = False          # il lato inferiore del campo ospita la corsia dei beat
+
+    PERFECT_W = 0.075                # secondi di tolleranza dal beat (+/-)
+    GOOD_W = 0.150
+    LOOKAHEAD = 1.2                  # quanti secondi di beat futuri mostra la corsia
+    FALLBACK_BPM = 120.0             # metronomo se la traccia non ha beat affidabili
+    GROOVE_AT = (3, 6, 10)           # serie di PERFECT per x2 / x3 / x4
+    LINE_BASE = (0, 100, 300, 500, 800)
+
+    def __init__(self):
+        super().__init__()
+        self.streak = self.best_streak = 0
+        self.perfects = self.goods = self.misses = 0
+        self.bonus_total = 0
+        self.metro = 0.0
+        self.pulse = 0.0
+        self.src = "metro"
+        self.judge = None            # [testo, colore, tempo trascorso]
+        self.info = None
+        self._prev_since = None
+
+    # ---- logica del beat ----
+    def mult(self):
+        return 1 + sum(1 for g in self.GROOVE_AT if self.streak >= g)
+
+    def _beat(self, game):
+        """-> (info, sorgente). Dalla musica se ha beat affidabili, altrimenti metronomo."""
+        vis = getattr(game, "visuals", None)
+        info = vis.beat_info(self.LOOKAHEAD) if vis is not None and hasattr(vis, "beat_info") else None
+        if info is not None:
+            return info, "music"
+        p = 60.0 / self.FALLBACK_BPM
+        since = self.metro % p
+        to_next = p - since
+        up, t = [], to_next
+        while t <= self.LOOKAHEAD:
+            up.append(t)
+            t += p
+        return {"offset": since if since <= to_next else -to_next,
+                "to_next": to_next, "since_last": since, "upcoming": up}, "metro"
+
+    def update(self, game, dt):
+        if super().update(game, dt):
+            return True
+        self.metro += dt
+        self.pulse = max(0.0, self.pulse - dt * 5.0)
+        if self.judge:
+            self.judge[2] += dt
+            if self.judge[2] > 0.8:
+                self.judge = None
+        self.info, self.src = self._beat(game)
+        since = self.info["since_last"]
+        if self._prev_since is not None and since < self._prev_since - 1e-6:   # e' scattato un beat
+            self.pulse = 1.0
+            if self.src == "metro":
+                game.sfx.play("tick")
+        self._prev_since = since
+        return False
+
+    def on_lock(self, game, piece):
+        super().on_lock(game, piece)
+        info, _ = self._beat(game)
+        off = abs(info["offset"])
+        before = self.mult()
+        lvl = game.level()
+        bx, by, cell = UI.geom()
+        px = bx + sum(x for x, _ in piece.cells()) / 4.0 * cell + cell / 2
+        py = by + (max(y for _, y in piece.cells()) - HIDDEN) * cell + cell
+        if off <= self.PERFECT_W:
+            self.streak += 1
+            self.perfects += 1
+            pts = 40 * lvl * self.mult()
+            self.judge = ["PERFECT", NEON_CYAN, 0.0]
+            game.sfx.play("perfect")
+            game.shock(px, py, 0.55, NEON_CYAN)
+        elif off <= self.GOOD_W:
+            self.goods += 1
+            pts = 15 * lvl * self.mult()
+            self.judge = ["GOOD", NEON_AMBER, 0.0]
+            game.sfx.play("good")
+            game.shock(px, py, 0.25, NEON_AMBER)
+        else:
+            self.misses += 1
+            pts = 0
+            self.judge = ["MISS", (255, 90, 110), 0.0]
+            self.streak = 0
+            game.sfx.play("miss")
+        self.best_streak = max(self.best_streak, self.streak)
+        game.score += pts
+        self.bonus_total += pts
+        after = self.mult()
+        if after > before:
+            game._popup(f"GROOVE x{after}", NEON_MAGENTA, -120)
+            game.shock(bx + COLS * cell / 2, by + ROWS * cell / 2, 1.0, NEON_MAGENTA)
+            game.aber = max(game.aber, 0.6)
+            game.sfx.play("level")
+        elif before > 1 and after == 1:
+            game._popup("GROOVE LOST", (255, 90, 110), -120)
+
+    def on_lines(self, game, n, full_rows, tspin, perfect):
+        extra = self.LINE_BASE[n] * game.level() * (self.mult() - 1)
+        if extra > 0:
+            game.score += extra
+            self.bonus_total += extra
+            game._popup(f"GROOVE BONUS +{extra:,}", NEON_MAGENTA, 90)
+
+    # ---- HUD / disegno ----
+    def accuracy(self):
+        total = self.perfects + self.goods + self.misses
+        return (100.0 * (self.perfects + 0.5 * self.goods) / total) if total else 100.0
+
+    def hud_items(self, game):
+        m = self.mult()
+        return [("SCORE", f"{int(game.disp_score):,}", TEXT_BRIGHT),
+                ("GROOVE", f"x{m}  ({self.streak})", NEON_MAGENTA if m > 1 else TEXT_DIM),
+                ("ACCURACY", f"{self.accuracy():.0f}%", C_S),
+                ("LINES", str(game.lines), C_I)]
+
+    def hints(self):
+        return ("LOCK ON THE BEAT", "BAR BELOW = BEATS")
+
+    def post_board(self, game, cv, rect):
+        """Corsia dei beat sotto il campo: i beat futuri scorrono dai due lati verso il centro,
+        dove si trova la zona di colpo (chiara = PERFECT, scura = GOOD)."""
+        if game.state not in ("play", "clearing") or game.paused or self.countdown > 0 or self.info is None:
+            return
+        bx, by, cell = UI.geom()
+        s = UI.scale
+        cx = bx + COLS * cell // 2
+        half = COLS * cell // 2
+        y = by + ROWS * cell + s(16)
+        hh = s(6)
+        pps = half / self.LOOKAHEAD
+        pygame.draw.line(cv, (120, 135, 200, 90), (cx - half, y), (cx + half, y), max(1, s(2)))
+        good, perf = int(self.GOOD_W * pps), int(self.PERFECT_W * pps)
+        zone = pygame.Surface((good * 2, hh * 2 + s(4)), pygame.SRCALPHA)
+        zone.fill((*NEON_CYAN, int(28 + 60 * self.pulse)))
+        cv.blit(zone, (cx - good, y - hh - s(2)))
+        zone = pygame.Surface((perf * 2, hh * 2 + s(4)), pygame.SRCALPHA)
+        zone.fill((*NEON_CYAN, int(60 + 150 * self.pulse)))
+        cv.blit(zone, (cx - perf, y - hh - s(2)))
+        for t in self.info["upcoming"]:
+            k = t / self.LOOKAHEAD
+            a = int(255 * (1 - 0.65 * k))
+            col = NEON_MAGENTA if t > self.GOOD_W else NEON_CYAN
+            dx = int(t * pps)
+            for sign in (-1, 1):
+                pygame.draw.line(cv, (*col, a), (cx + sign * dx, y - hh), (cx + sign * dx, y + hh), max(2, s(3)))
+
+    def draw_overlay(self, game, cv):
+        super().draw_overlay(game, cv)
+        bx, by, cell = UI.geom()
+        cx = bx + COLS * cell // 2
+        if self.judge:
+            text, col, t = self.judge
+            a = int(255 * max(0.0, 1 - t / 0.8))
+            UI.text(cv, UI.F["mid"], text, col, (cx, by + ROWS * cell - UI.scale(30) - t * UI.scale(26)),
+                    "center", alpha=a)
+        m = self.mult()
+        if m > 1:
+            y = by + UI.scale(22)
+            UI.text(cv, UI.F["small"], f"GROOVE x{m}", NEON_MAGENTA, (cx, y), "center",
+                    alpha=int(170 + 85 * self.pulse))
+            nxt = next((g for g in self.GROOVE_AT if g > self.streak), None)
+            if nxt is not None:
+                prev = max([g for g in self.GROOVE_AT if g <= self.streak] or [0])
+                frac = (self.streak - prev) / float(nxt - prev)
+                w = UI.scale(90)
+                pygame.draw.rect(cv, (255, 255, 255, 40), (cx - w // 2, y + UI.scale(14), w, UI.scale(4)))
+                pygame.draw.rect(cv, (*NEON_MAGENTA, 220), (cx - w // 2, y + UI.scale(14), int(w * frac), UI.scale(4)))
+
+    # ---- fine partita ----
+    def record_value(self, game, win):
+        return game.score if game.score > 0 else None
+
+    def record_extra(self, game):
+        return {"lines": game.lines, "acc": round(self.accuracy(), 1)}
+
+    def result_stats(self, game, win):
+        return [(f"Score  {game.score:,}", TEXT_BRIGHT),
+                (f"Perfect {self.perfects}  Good {self.goods}  Miss {self.misses}", TEXT_DIM),
+                (f"Accuracy {self.accuracy():.0f}%   Best streak {self.best_streak}", TEXT_DIM)]
+
+    def to_dict(self):
+        d = super().to_dict()
+        d.update(streak=self.streak, best_streak=self.best_streak, perfects=self.perfects,
+                 goods=self.goods, misses=self.misses, metro=self.metro)
+        return d
+
+    def from_dict(self, d):
+        super().from_dict(d)
+        self.streak = int(d.get("streak", 0))
+        self.best_streak = int(d.get("best_streak", 0))
+        self.perfects = int(d.get("perfects", 0))
+        self.goods = int(d.get("goods", 0))
+        self.misses = int(d.get("misses", 0))
+        self.metro = float(d.get("metro", 0.0))
+
+
 # ----------------------------------------------------------------------------
 # Registro
 # ----------------------------------------------------------------------------
-MODE_ORDER = ("classic", "sprint", "ultra", "marathon", "zen", "cheese", "2099")
-_REGISTRY = {c.id: c for c in (ClassicMode, SprintMode, UltraMode, MarathonMode, ZenMode, CheeseMode, Mode2099)}
+MODE_ORDER = ("classic", "sprint", "ultra", "marathon", "zen", "cheese", "2099", "rhythm")
+_REGISTRY = {c.id: c for c in (ClassicMode, SprintMode, UltraMode, MarathonMode, ZenMode, CheeseMode, Mode2099,
+                               RhythmMode)}
 
 
 def create_mode(mode_id):
