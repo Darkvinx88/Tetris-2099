@@ -37,7 +37,7 @@ Pause Menu
 ## Requirements
 
 - Python 3.10+
-- pygame (`pip install pygame`)
+- pygame-ce (`pip install pygame-ce`)
 - numpy (`pip install numpy`): needed for the audio analysis, the plasma and aurora backgrounds and the shockwave distortion. The game runs without it, just without beat-reactive visuals, plasma, aurora and the board distortion (shockwaves still show their glowing rings), and Rhythm mode falls back to a metronome
 - libopenmpt (optional): a system library that gives exact beat sync on tracker music (`.it`, `.xm`, `.s3m`, `.mod`). Without it the game works the same, and trackers just use the background without exact sync
 
@@ -53,7 +53,7 @@ On Windows, the release package already includes the libopenmpt DLLs. If you run
 Or, if you prefer doing it by hand:
 
 ```bash
-pip install pygame numpy
+pip install pygame-ce numpy
 python tetris.py
 ```
 
