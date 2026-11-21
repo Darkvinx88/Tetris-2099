@@ -2,19 +2,23 @@
 modules/music.py - musica di sottofondo per tetris.py
 
 Gestisce una playlist di musica (incluse tracce chiptune in formato MOD/
-IT/XM/S3M, oltre a ogg/mp3/wav) SENZA toccare la logica di gioco: usa il
-canale "music" di pygame.mixer (separato da quello degli Sfx sintetizzati
-in tetris.py), quindi effetti e musica convivono senza conflitti.
+IT/XM/S3M, oltre a ogg/mp3/wav) 
 
-Formati supportati
--------------------
-pygame.mixer.music si appoggia a SDL2_mixer, che nella stragrande
-maggioranza delle build (le wheel di pygame/pygame-ce da PyPI comprese)
-include un player MOD integrato capace di leggere MOD, S3M, IT e XM, oltre
-a ogg/mp3/wav/flac. Quindi i classici chiptune "da keygen" in .it/.xm
-funzionano di norma SENZA bisogno di convertirli: basta metterli nella
-cartella e MusicManager li carica cosi' come sono.
+Uso in tetris.py (poche righe di integrazione):
 
+    from modules.music import MusicManager
+    ...
+    music = MusicManager("music")     # cartella con le tracce
+    music.play()                      # avvia la playlist (shuffle di default)
+    ...
+    # nel game loop, una volta per frame:
+    music.update()
+    ...
+    # per legare il volume musica allo stesso mute (M) degli Sfx:
+    music.set_muted(not game.sfx.enabled)
+    ...
+    # alla chiusura:
+    music.stop()
 """
 import random
 from pathlib import Path
