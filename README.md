@@ -2,7 +2,8 @@
 
 A modern take on the classic, written in Python with pygame.
 
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/556d0c26-9fe8-4867-83f3-95d902926c25" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/de6adf55-9e66-4431-8944-a83b43ec4951" />
+
 
 
 ## Features
@@ -25,9 +26,12 @@ A modern take on the classic, written in Python with pygame.
 
 ## Screenshots
 
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/0e47af07-4e8d-44ea-b754-c73210803354" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/6a8b6c8c-46c9-4ad0-981d-19eb1b438882" />
+
 Main HUD
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/12f2597b-4718-475a-93b5-425816fcd5a3" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/f8d07d73-be14-45b0-af2f-cb20e5ee9fff" />
+
+
 Pause Menu
 
 ## Requirements
