@@ -8,7 +8,6 @@ A modern take on the classic, written in Python with pygame. **Fully portable on
 
 ## Features
 
-- **Portable on Windows and Linux**: unzip the folder and play, no installation needed (it can run from a USB stick too)
 - SRS rotation with wall kicks, ghost piece, hold and a next-queue preview
 - Score, levels, combos and back-to-back tracking, with a persisted high score
 - **8 game modes**: Classic, Sprint 40L, Ultra 2:00, Marathon, Zen, Cheese Race, 2099 Chaos and **Rhythm**, with timers, goals and local Top 5 leaderboards
@@ -23,7 +22,7 @@ A modern take on the classic, written in Python with pygame. **Fully portable on
 - Windowed or fullscreen mode (`F11`) with a responsive layout
 - Automatic save/resume: closing the game or pausing stores your current run (including the game mode and its timers), and you can pick it up from the main menu ("Continue")
 - Main menu and pause menu (Resume, Restart, Options, Main menu, Quit), navigable with keyboard, mouse or gamepad
-- Options for music volume, effects volume, vibration and starting background, all saved between sessions
+- Portable on Windows and Linux: unzip the folder and play, no installation needed (it can run from a USB stick too)
 
 ## Screenshots
 
