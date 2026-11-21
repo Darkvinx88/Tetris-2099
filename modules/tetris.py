@@ -7,6 +7,11 @@ from pathlib import Path
 
 import pygame
 
+try:
+    import numpy as np          # opzionale: serve solo alla distorsione dell'onda d'urto
+except ImportError:
+    np = None
+
 from joypad import JoypadManager
 from music import MusicManager
 from visuals import VisualsManager, MODES
@@ -125,6 +130,8 @@ class Sfx:
                 "hard": (220, 55, 150, 0.5), "hold": (340, 260, 90, 0.3),
                 "clear": (600, 1000, 230, 0.3), "tetris": (400, 1500, 450, 0.35),
                 "level": (700, 1200, 300, 0.3), "over": (320, 70, 800, 0.4),
+                "perfect": (880, 1760, 130, 0.30), "good": (660, 880, 100, 0.26),
+                "miss": (200, 120, 140, 0.30), "tick": (1200, 1200, 25, 0.12),
             }
             for k, v in spec.items():
                 self.sounds[k] = self._tone(*v)
@@ -311,10 +318,11 @@ def load_settings():
             "vibration": bool(data.get("vibration", True)),
             "background": data.get("background") if data.get("background") in MODES else MODES[0],
             "mode": data.get("mode") if data.get("mode") in gm.MODE_ORDER else "classic",
+            "spectrum": bool(data.get("spectrum", True)),
         }
     except (OSError, ValueError, AttributeError, TypeError):
         return {"fullscreen": False, "volume": 0.6, "sfx_volume": 0.6,
-                "vibration": True, "background": MODES[0], "mode": "classic"}
+                "vibration": True, "background": MODES[0], "mode": "classic", "spectrum": True}
 
 
 def save_settings(settings):
@@ -492,6 +500,10 @@ class Game:
         self.particles = []
         self.popups = []
         self.trails = []          # scie dell'hard drop
+        self.frags = []           # frammenti con fisica delle righe cancellate
+        self.shocks = []          # onde d'urto attive [x, y, eta', durata, forza, colore]
+        self._shattered = set()   # celle gia' frantumate nel line clear in corso
+        self.spectrum_on = True   # equalizzatore attorno al campo (tasto V)
         self.squash = {}          # (x, y) -> tempo dall'atterraggio
         self.shake = 0.0
         self.zoom = 0.0
@@ -714,6 +726,9 @@ class Game:
         self.particles.clear()
         self.popups.clear()
         self.trails.clear()
+        self.frags.clear()
+        self.shocks.clear()
+        self._shattered = set()
         self.squash.clear()
         self.zoom = self.aber = 0.0
         self.state = "play"
@@ -823,6 +838,9 @@ class Game:
         for x, y in p.cells():
             self._burst(BOARD_X + x * CELL + CELL / 2, BOARD_Y + (y - HID) * CELL + CELL / 2, col, 2, up=True)
         self.sfx.play("hard")
+        self.shock(BOARD_X + (sum(x for x, _ in p.cells()) / 4.0 + 0.5) * CELL,
+                   BOARD_Y + (max(y for _, y in p.cells()) - HID + 1) * CELL,
+                   0.3 + 0.7 * min(1.0, d / 14.0), col)
         self.lock()
 
     # ---- T-Spin (regola dei 3 angoli, standard SRS/Guideline) ----
@@ -923,14 +941,22 @@ class Game:
         self.zoom = 0.012 * n
         self.aber = 1.0 if n == 4 else 0.35 * n / 3
         self.squash.clear()
-        for y in full:
+        for y in full:                         # scintille (i frammenti veri nascono in update, cella per cella)
             for x in range(W):
-                self._burst(BOARD_X + x * CELL + CELL / 2, BOARD_Y + (y - HID) * CELL + CELL / 2, self.grid[y][x], 3)
+                self._burst(BOARD_X + x * CELL + CELL / 2, BOARD_Y + (y - HID) * CELL + CELL / 2, self.grid[y][x], 1)
+        self._shattered = set()
+        self.shock(BOARD_X + W * CELL / 2, BOARD_Y + (sum(full) / n - HID + 0.5) * CELL,
+                   0.5 + 0.2 * n + (0.5 if perfect else 0.0), COLORS["I"] if n < 4 else COLORS["O"])
         self.clear_rows, self.clear_t = full, 0.0
         self.state = "clearing"
 
     def _finish_clear(self):
         gone = set(self.clear_rows)
+        for gy in gone:                        # le celle ai bordi (mai scomparse a video) si frantumano ora
+            for x in range(W):
+                if (x, gy) not in self._shattered:
+                    self._spawn_frags(x, gy)
+        self._shattered = set()
         kept = [r for i, r in enumerate(self.grid) if i not in gone]
         self.grid = [[None] * W for _ in range(len(gone))] + kept
         self.clear_rows = []
@@ -985,6 +1011,190 @@ class Game:
         if text:
             self.popups.append([text, color, dy, 0.0])
 
+    # ---- frammenti con fisica ----
+    FRAG_CAP = 420
+
+    def _spawn_frags(self, x, gy, n=4):
+        col = self.grid[gy][x]
+        if col is None or len(self.frags) >= self.FRAG_CAP:
+            return
+        s = UI_SCALE
+        cx = BOARD_X + x * CELL + CELL / 2
+        cy = BOARD_Y + (gy - HID) * CELL + CELL / 2
+        for _ in range(n):
+            r = CELL * random.uniform(0.18, 0.34)
+            base = random.uniform(0, math.tau)
+            k = 3 if random.random() < 0.7 else 4
+            pts = []
+            for i in range(k):
+                a = base + i * math.tau / k + random.uniform(-0.4, 0.4)
+                rr = r * random.uniform(0.6, 1.0)
+                pts.append((math.cos(a) * rr, math.sin(a) * rr))
+            life = random.uniform(1.0, 1.7)
+            self.frags.append([cx + random.uniform(-0.3, 0.3) * CELL, cy + random.uniform(-0.3, 0.3) * CELL,
+                               (x - 4.5) * CELL * 2.0 + random.uniform(-110, 110) * s,
+                               -random.uniform(180, 620) * s,
+                               random.uniform(0, math.tau), random.uniform(-14, 14),
+                               life, life, shade(col, random.uniform(0.8, 1.25)), pts])
+
+    def _update_frags(self, dt):
+        if not self.frags:
+            return
+        s = UI_SCALE
+        g = 2300 * s
+        floor = BOARD_Y + H * CELL
+        left, right = BOARD_X, BOARD_X + W * CELL
+        tops = None
+        if self.state != "clearing":           # in "clearing" la pila sta per cambiare: solo pavimento e pareti
+            tops = []
+            for x in range(W):
+                top = floor
+                for gy in range(HID, H + HID):
+                    if self.grid[gy][x] is not None:
+                        top = BOARD_Y + (gy - HID) * CELL
+                        break
+                tops.append(top)
+        for f in self.frags:
+            f[6] -= dt
+            f[3] += g * dt
+            prev_y = f[1]
+            f[0] += f[2] * dt
+            f[1] += f[3] * dt
+            f[4] += f[5] * dt
+            if f[0] < left:
+                f[0], f[2] = left, abs(f[2]) * 0.5
+            elif f[0] > right:
+                f[0], f[2] = right, -abs(f[2]) * 0.5
+            lim = floor
+            if tops is not None:
+                col = min(W - 1, max(0, int((f[0] - BOARD_X) // CELL)))
+                if prev_y <= tops[col]:        # rimbalza sulla pila solo se arriva dall'alto
+                    lim = tops[col]
+            if f[1] >= lim and f[3] > 0:
+                f[1] = lim - 0.5
+                f[3] = -f[3] * 0.42
+                f[2] *= 0.78
+                f[5] *= 0.6
+                if abs(f[3]) < 70 * s:
+                    f[3], f[2], f[5] = 0.0, f[2] * 0.5, f[5] * 0.5
+        self.frags = [f for f in self.frags if f[6] > 0]
+
+    def _draw_frags(self, cv):
+        for x, y, _vx, _vy, ang, _sp, life, _mx, col, pts in self.frags:
+            k = min(1.0, life / 0.35)          # rimpiccioliscono prima di sparire
+            ca, sa = math.cos(ang) * k, math.sin(ang) * k
+            poly = [(x + px * ca - py * sa, y + px * sa + py * ca) for px, py in pts]
+            pygame.draw.polygon(cv, col, poly)
+            pygame.draw.polygon(cv, shade(col, 1.6), poly, 1)
+
+    # ---- onda d'urto ----
+    def shock(self, x, y, strength=1.0, color=(255, 255, 255)):
+        """Onda d'urto con epicentro (x, y) in pixel del canvas: anello luminoso + distorsione
+        della board (la distorsione richiede numpy)."""
+        strength = max(0.0, min(1.5, strength))
+        if len(self.shocks) >= 4:
+            self.shocks.pop(0)
+        self.shocks.append([x, y, 0.0, 0.45 + 0.3 * strength, strength, color])
+
+    def _apply_shocks(self, cv, rect):
+        if not self.shocks:
+            return
+        rect = rect.clip(cv.get_rect())
+        if rect.w < 8 or rect.h < 8:
+            return
+        w, h = rect.size
+        rmax = max(w, h) * 0.85
+        if np is not None:
+            st = max(4, int(round(4 * UI_SCALE)))   # il campo di spostamento si calcola a bassa risoluzione
+            gw, gh = (w + st - 1) // st, (h + st - 1) // st
+            X = (np.arange(gw, dtype=np.float32) * st + st / 2)[:, None]      # array indicizzati [x, y]
+            Y = (np.arange(gh, dtype=np.float32) * st + st / 2)[None, :]
+            DX = np.zeros((gw, gh), np.float32)
+            DY = np.zeros((gw, gh), np.float32)
+            for x, y, age, life, stg, _col in self.shocks:
+                p = age / life
+                dx, dy = X - (x - rect.x), Y - (y - rect.y)
+                d = np.sqrt(dx * dx + dy * dy) + 1e-3
+                u = (d - p * rmax) / (UI_SCALE * 34.0)
+                amp = stg * 5.5 * UI_SCALE * (1 - p) ** 1.3
+                f = np.exp(-u * u) * np.sin(u * 2.6) * amp / d
+                DX += f * dx
+                DY += f * dy
+            # arrotondo sulla griglia grossolana, ingrandisco (nearest) e rimappo i pixel sul posto
+            DXi = np.repeat(np.repeat(np.rint(DX).astype(np.int16), st, 0), st, 1)[:w, :h]
+            DYi = np.repeat(np.repeat(np.rint(DY).astype(np.int16), st, 0), st, 1)[:w, :h]
+            xs = np.clip(np.arange(w, dtype=np.int32)[:, None] + DXi, 0, w - 1)
+            ys = np.clip(np.arange(h, dtype=np.int32)[None, :] + DYi, 0, h - 1)
+            sub = cv.subsurface(rect)
+            px = pygame.surfarray.pixels2d(sub)          # vista diretta sui pixel (nessuna conversione, nessun blit)
+            px[:] = px.copy().take(xs * h + ys)
+            del px                                       # rilascia il lock della superficie
+        layer = pygame.Surface((w, h))          # anelli luminosi, in somma additiva
+        for x, y, age, life, stg, col in self.shocks:
+            p = age / life
+            fade = (1 - p) ** 1.4 * min(1.0, 0.4 + 0.6 * stg)
+            r = int(p * rmax)
+            if r < 3:
+                continue
+            c = tuple(int(v * fade) for v in col)
+            pygame.draw.circle(layer, c, (int(x - rect.x), int(y - rect.y)), r, max(2, int(3 * UI_SCALE)))
+            if r > 14:
+                c2 = tuple(int(v * fade * 0.45) for v in col)
+                pygame.draw.circle(layer, c2, (int(x - rect.x), int(y - rect.y)), int(r * 0.82), max(1, int(2 * UI_SCALE)))
+        cv.blit(layer, rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+
+    # ---- spettro audio attorno al campo ----
+    def draw_spectrum(self, cv):
+        vis = self.visuals
+        if not self.spectrum_on or vis is None or not hasattr(vis, "spectrum"):
+            return
+        pad = uiscale(8)
+        rect = pygame.Rect(BOARD_X - pad, BOARD_Y - pad, W * CELL + 2 * pad, H * CELL + 2 * pad)
+        pitch = max(5, uiscale(9))
+        bw = max(2, pitch - max(2, uiscale(3)))
+        maxlen, corner, gap = uiscale(14), uiscale(26), max(2, uiscale(3))
+        # sui lati lo spazio tra campo e pannelli (HOLD/NEXT) e' poco: le barre non devono uscirne
+        room_l = rect.left - (uiscale(20) + uiscale(160))
+        room_r = (BOARD_X + W * CELL + uiscale(20)) - rect.right
+        side_max = max(2, min(maxlen, min(room_l, room_r) - gap - 2))
+        vals = vis.spectrum(48)
+        beat = max(getattr(vis, "kick", 0.0), getattr(vis, "bassnote", 0.0))
+        cx = rect.centerx
+        half_w = rect.w / 2 - corner            # mezzo lato orizzontale (senza angoli)
+        side = rect.h - 2 * corner
+        total = half_w + side + half_w          # dal centro del fondo al centro del lato alto
+        bottom = getattr(self.mode, "spectrum_bottom", True)
+        c0, c1 = NEON_CYAN, NEON_MAGENTA
+
+        def bar(u, where, a, b):
+            v = min(1.0, vals[min(47, int(u * 47.999))] * (1.0 + 0.35 * beat))
+            ln = max(2, int(2 + v * (side_max if where in ("l", "r") else maxlen)))
+            col = tuple(int(c0[i] * (1 - u) + c1[i] * u) for i in range(3))
+            alpha = int(90 + 150 * v)
+            if where == "l":
+                r = pygame.Rect(rect.left - gap - ln, b - bw // 2, ln, bw)
+            elif where == "r":
+                r = pygame.Rect(rect.right + gap, b - bw // 2, ln, bw)
+            elif where == "u":
+                r = pygame.Rect(a - bw // 2, rect.top - gap - ln, bw, ln)
+            else:
+                r = pygame.Rect(a - bw // 2, rect.bottom + gap, bw, ln)
+            pygame.draw.rect(cv, (*col, alpha), r)
+
+        y = rect.bottom - corner
+        while y >= rect.top + corner:           # lati: basso -> alto, bassi in basso, acuti in alto
+            u = (half_w + (rect.bottom - corner - y)) / total
+            bar(u, "l", 0, y)
+            bar(u, "r", 0, y)
+            y -= pitch
+        label_half = uiscale(78)                # lascia libera l'etichetta "MODE // ..." sopra il campo
+        for dx in range(0, int(half_w) + 1, pitch):
+            for sx in ((cx,) if dx == 0 else (cx - dx, cx + dx)):
+                if dx > label_half:
+                    bar((half_w + side + (half_w - dx)) / total, "u", sx, 0)
+                if bottom:
+                    bar(dx / total, "d", sx, 0)
+
     # ---- update ----
     def update(self, dt):
         self.t += dt
@@ -1003,6 +1213,19 @@ class Game:
         for tr in self.trails:
             tr[4] -= dt
         self.trails = [tr for tr in self.trails if tr[4] > 0]
+        if not self.paused:
+            if self.state == "clearing":       # ogni cella si frantuma nel momento in cui scompare a video
+                p = self.clear_t / CLEAR_TIME
+                n_sh = 6 if len(self.clear_rows) >= 4 else 4
+                for gy in self.clear_rows:
+                    for x in range(W):
+                        if (x, gy) not in self._shattered and abs(x - 4.5) / 4.5 < p:
+                            self._shattered.add((x, gy))
+                            self._spawn_frags(x, gy, n_sh)
+            self._update_frags(dt)
+            for sh in self.shocks:
+                sh[2] += dt
+            self.shocks = [sh for sh in self.shocks if sh[2] < sh[3]]
         for c in list(self.squash):
             self.squash[c] += dt
             if self.squash[c] >= SQUASH_T:
@@ -1079,6 +1302,10 @@ class Game:
     def keydown(self, key):
         if key == pygame.K_m:
             self.sfx.enabled = not self.sfx.enabled
+            return
+        if key == pygame.K_v:
+            self.spectrum_on = not self.spectrum_on
+            self.on_settings_change()
             return
         if self.state == "menu":
             opts = self.menu_options()
@@ -1165,6 +1392,7 @@ class Game:
         if self.state == "menu":
             self.draw_menu(cv)
             return
+        self.draw_spectrum(cv)
         self.draw_panels(cv)
         draw_text(cv, F["tiny"], "MODE // " + self.mode.long_name, TEXT_DIM,
                   (BOARD_X + W * CELL // 2, uiscale(4)), "midtop", shadow=False)
@@ -1239,8 +1467,10 @@ class Game:
             s = max(2, int(7 * k))
             pygame.draw.rect(cv, (*shade(col, 1.2), int(255 * k)), (x - s / 2, y - s / 2, s, s), border_radius=2)
 
-        self.mode.post_board(self, cv, pygame.Rect(BOARD_X - uiscale(8), BOARD_Y - uiscale(8),
-                                                   W * CELL + uiscale(16), H * CELL + uiscale(16)))
+        self._draw_frags(cv)
+        board_rect = pygame.Rect(BOARD_X - uiscale(8), BOARD_Y - uiscale(8), W * CELL + uiscale(16), H * CELL + uiscale(16))
+        self.mode.post_board(self, cv, board_rect)
+        self._apply_shocks(cv, board_rect)
 
         # popup testuali
         cx, cy = BOARD_X + W * CELL // 2, BOARD_Y + H * CELL // 2 - uiscale(40)
@@ -1480,7 +1710,7 @@ class Game:
             draw_preview(cv, name, nxt.centerx, nxt.y + uiscale(66) + i * uiscale(62), size)
         help_r = pygame.Rect(nx, nxt.bottom + uiscale(12), uiscale(160), H * CELL + uiscale(8) - nxt.height - uiscale(12))
         panel(cv, help_r, "CONTROLS")
-        lines = ("← → move", "↑ X rotate", "Z rotate back", "↓ soft drop", "SPACE hard drop", "C hold", "P pause  M audio") + tuple(self.mode.hints())
+        lines = ("← → move", "↑ X rotate", "Z rotate back", "↓ soft drop", "SPACE hard drop", "C hold", "P pause  M audio", "V spectrum") + tuple(self.mode.hints())
         for i, l in enumerate(lines):
             draw_text(cv, F["tiny"], l, TEXT_DIM, (help_r.x + uiscale(10), help_r.y + uiscale(36) + i * uiscale(22)), shadow=False)
 
@@ -1599,7 +1829,7 @@ class Game:
             pygame.draw.rect(cv, col, (ex + k * (bw + gap), by + mh // 2 - hgt, bw, hgt))
 
         # discreet signature, bottom-left (outside the frame)
-        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.3", (70, 76, 100),
+        draw_text(cv, F["tiny"], "Made by Darkvinx88  \u00b7  v0.4", (70, 76, 100),
                   (uiscale(10), WIN_H - uiscale(6)), "bottomleft", shadow=False, alpha=150)
 
         # CRT: scanlines + barra di refresh che scorre
@@ -1640,13 +1870,13 @@ def main():
     music = MusicManager(music_folder, volume=settings["volume"])   # cerca .it/.xm/.mod/.s3m/.ogg/.mp3/.wav qui dentro
     music.play()
 
-    # VisualsManager: sfondi audio-reattivi (synthwave, starfield, plasma, squares)
+    # VisualsManager: sfondi audio-reattivi (synthwave, tunnel, matrix, aurora, galaxy, ...)
     visuals = VisualsManager(music, mode=settings["background"], colors=list(COLORS.values()))
 
     def persist_settings():
         save_settings({"fullscreen": fullscreen, "volume": music.volume, "sfx_volume": game.sfx.volume,
                        "vibration": game.vibration, "background": game.start_bg,
-                       "mode": game.mode_id})
+                       "mode": game.mode_id, "spectrum": game.spectrum_on})
 
     def toggle_fullscreen():
         nonlocal screen, fullscreen
@@ -1689,6 +1919,7 @@ def main():
     game.joypad, game.visuals = joypad, visuals
     game.vibration = settings["vibration"]
     game.mode_id = settings["mode"]
+    game.spectrum_on = settings["spectrum"]
     gm.bind_ui(F, draw_text, uiscale, lambda: (BOARD_X, BOARD_Y, CELL))
     game.start_bg = visuals.mode        # se plasma non e' disponibile (no numpy) cade su synthwave
 
@@ -1792,7 +2023,7 @@ def main():
         music.set_muted(not game.sfx.enabled)
         game.update(dt)
 
-        # Sfondo audio-reattivo (synthwave/starfield/plasma/squares)
+        # Sfondo audio-reattivo (vedi visuals.MODES)
         visuals.update(dt, game)
         visuals.draw(screen)
 
