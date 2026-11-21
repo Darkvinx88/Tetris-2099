@@ -1,26 +1,6 @@
 """
 modules/visuals.py - sfondi dinamici audio-reattivi per tetris.py
 
-Due parti, indipendenti dalla logica di gioco:
-
-1. ANALISI AUDIO (in un thread in background, con cache su disco)
-   - ogg/mp3/wav/flac: la traccia viene decodificata (pygame.mixer.Sound, o
-     librosa se installata e pygame non ce la fa) e se ne calcola con numpy
-     un inviluppo di energia per bassi / medi / alti a 100 Hz, piu' i colpi
-     (kick sui bassi, snare sui medi, hat sugli alti) tramite spectral flux.
-   - tracker (.it .xm .s3m .mod): il modulo viene eseguito offline da
-     libopenmpt (via ctypes: nessun binding Python da installare, serve solo
-     la libreria di sistema) e si leggono riga per riga le note di ogni
-     canale. Gli strumenti vengono classificati dal nome del sample/strumento
-     (kick/bd, snare/clap, hat/cymbal, bass...), quindi i colpi sono
-     ESATTI, non stimati. Dove i nomi non dicono nulla si ricade sull'analisi
-     audio del rendering di libopenmpt.
-   - le tracce successive della playlist vengono analizzate in anticipo.
-
-2. SFONDI (VisualsManager.draw): "synthwave" (sole + griglia prospettica),
-   "starfield" (stelle in parallasse), "plasma" (numpy) e "squares" (i
-   quadrati fluttuanti originali). La velocita' scala col livello; il kick
-   fa pulsare, le medie spostano i colori, gli alti fanno brillare.
 
 Uso in tetris.py (vedi tetris_patched.py):
 
@@ -33,11 +13,9 @@ Uso in tetris.py (vedi tetris_patched.py):
     visuals.draw(screen)
     # negli eventi KEYDOWN:   visuals.handle_event(e)
 
-Tasti: B = prossimo sfondo (Shift+B = precedente), F3 = HUD di debug,
-[ e ] = anticipa/ritarda la sincronia di 10 ms (se senti i flash fuori tempo).
 
-Provarlo da solo:   python visuals.py cartella_musica
 """
+import bisect
 import colorsys
 import ctypes
 import ctypes.util
@@ -57,11 +35,13 @@ except ImportError:              # senza numpy: niente analisi, niente plasma
     np = None
 
 ENV_HZ = 100                      # risoluzione degli inviluppi (campioni/s)
-CACHE_VERSION = 1
+CACHE_VERSION = 2                 # v2: aggiunge lo spettro a bande (Analysis.spec)
+SPEC_BANDS = 24                   # bande log-spaziate 40 Hz..14 kHz per l'equalizzatore attorno al campo
 TRACKER_EXTS = {".it", ".xm", ".s3m", ".mod"}
 MAX_RENDER_SECONDS = 1200         # tetto di sicurezza per moduli "infiniti"
 
-MODES = ("synthwave", "starfield", "plasma", "squares")
+MODES = ("synthwave", "starfield", "plasma", "tunnel", "matrix", "aurora", "galaxy")
+NEEDS_NUMPY = ("plasma", "aurora")      # sfondi che senza numpy ripiegano su synthwave
 LEVEL_HUES = (0.83, 0.55, 0.95, 0.10, 0.38, 0.70)   # tinta base per livello (ciclica)
 
 
@@ -114,12 +94,15 @@ class Analysis:
         self.n = n
         self.duration = duration
         self.exact = set()
+        self.spec = None          # uint8 (n, SPEC_BANDS): spettro a bande 0..255 (None = non disponibile)
+        self._beats = None        # cache dei tempi di beat (vedi beat_times())
         for f in self.FIELDS:
             setattr(self, f, np.zeros(n, np.float32))
 
     def save(self, path):
+        extra = {"spec": self.spec} if self.spec is not None else {}
         np.savez_compressed(path, duration=self.duration, exact=",".join(sorted(self.exact)),
-                            **{f: getattr(self, f) for f in self.FIELDS})
+                            **extra, **{f: getattr(self, f) for f in self.FIELDS})
 
     @classmethod
     def load(cls, path):
@@ -129,7 +112,38 @@ class Analysis:
             setattr(a, f, d[f].astype(np.float32))
         ex = str(d["exact"])
         a.exact = set(ex.split(",")) if ex else set()
+        if "spec" in d.files:
+            a.spec = d["spec"].astype(np.uint8)
         return a
+
+    def beat_times(self):
+        """Tempi (s) dei 'beat' giocabili, ricavati dai colpi della musica.
+        Preferisce i kick; ripiega su snare e poi su tick. Con meno di ~0.4 colpi/s
+        (o nessuno) ritorna un array vuoto: chi usa l'API ripiega su un metronomo.
+        I colpi troppo ravvicinati vengono diradati (min 0.30 s) perche' ogni beat
+        giocabile sia un evento distinto e le finestre di tolleranza non si sovrappongano."""
+        if self._beats is not None:
+            return self._beats
+        best = np.zeros(0, np.float64)
+        for role in ("kick", "snare", "tick"):
+            arr = getattr(self, role)
+            idx = np.nonzero(arr > 0.0)[0]
+            if len(idx) < 4:
+                continue
+            # diradamento "greedy per forza": vince il colpo piu' forte in ogni finestra di 0.30 s
+            # (cosi' un hi-hat che perde nella banda dei bassi non scalza il kick vero)
+            kept = []
+            for i in idx[np.argsort(-arr[idx], kind="stable")]:
+                p = bisect.bisect_left(kept, i)
+                gap = 0.30 * ENV_HZ
+                if (p > 0 and i - kept[p - 1] < gap) or (p < len(kept) and kept[p] - i < gap):
+                    continue
+                kept.insert(p, int(i))
+            if len(kept) >= max(4, 0.4 * self.duration):
+                best = np.asarray(kept, np.float64) / float(ENV_HZ)
+                break
+        self._beats = best
+        return best
 
 
 # ============================================================================
@@ -175,6 +189,14 @@ def _band_analysis(x, sr):
     m_hi = (freqs >= 2200) & (freqs < min(14000.0, sr / 2))
     m_cent = (freqs >= 160) & (freqs < 8000)
     lo, mid, hi, cent = (np.zeros(n, np.float32) for _ in range(4))
+    f_max = min(14000.0, sr / 2.0 - 1.0)
+    edges = np.geomspace(40.0, f_max, SPEC_BANDS + 1)
+    band_idx = [np.nonzero((freqs >= edges[b]) & (freqs < edges[b + 1]))[0] for b in range(SPEC_BANDS)]
+    for b in range(SPEC_BANDS):               # a basse frequenze le bande strette possono non contenere bin
+        if len(band_idx[b]) == 0:
+            k = int(np.argmin(np.abs(freqs - math.sqrt(edges[b] * edges[b + 1]))))
+            band_idx[b] = np.array([k])
+    spec = np.zeros((n, SPEC_BANDS), np.float32)
     for f0 in range(0, n, 512):
         f1 = min(n, f0 + 512)
         seg = xp[f0 * hop: (f1 - 1) * hop + win]
@@ -183,6 +205,8 @@ def _band_analysis(x, sr):
         lo[f0:f1] = mag[:, m_lo].sum(1)
         mid[f0:f1] = mag[:, m_mid].sum(1)
         hi[f0:f1] = mag[:, m_hi].sum(1)
+        for b, ix in enumerate(band_idx):
+            spec[f0:f1, b] = mag[:, ix].mean(1)
         mc = mag[:, m_cent]
         cent[f0:f1] = (mc * freqs[m_cent]).sum(1) / (mc.sum(1) + 1e-9)
 
@@ -196,6 +220,8 @@ def _band_analysis(x, sr):
     an.snare = _pick_onsets(an.mid, min_gap=0.15, k=1.5)
     an.hat = _pick_onsets(an.hi, min_gap=0.06, k=1.4)
     an.tick = an.kick.copy()
+    sp = np.stack([_normalize_db(spec[:, b]) for b in range(SPEC_BANDS)], axis=1)
+    an.spec = (np.clip(sp, 0.0, 1.0) * 255.0).astype(np.uint8)
     return an
 
 
@@ -486,7 +512,7 @@ class VisualsManager:
     def __init__(self, music=None, mode="synthwave", colors=None, sync_offset_ms=0, cache_dir=None):
         self.music = music
         self.mode = mode if mode in MODES else MODES[0]
-        if np is None and self.mode == "plasma":
+        if np is None and self.mode in NEEDS_NUMPY:
             self.mode = "synthwave"
         self.colors = list(colors) if colors else [(34, 211, 238), (250, 204, 21), (192, 132, 252),
                                                    (74, 222, 128), (248, 113, 113), (96, 165, 250)]
@@ -510,6 +536,7 @@ class VisualsManager:
         self.lo = self.mid = self.hi = 0.0
         self.tone = 0.5
         self.kick = self.snare = self.hat = self.bassnote = self.tick = 0.0
+        self.spec = [0.0] * SPEC_BANDS          # spettro a bande, smussato (0..1)
 
         # animazione
         self.dt = 1 / 60
@@ -522,16 +549,18 @@ class VisualsManager:
 
         self.size = None
         self._grads, self._glows = {}, {}
-        self._stars = self._squares = self._mountains = self._plasma = None
+        self._stars = self._mountains = self._plasma = None
+        self._aur = self._mx = self._gal = None
+        self._tun_pos = 0.0
         self._font = None
 
     # ---- controlli ----
     def set_mode(self, mode):
-        if mode in MODES and not (mode == "plasma" and np is None):
+        if mode in MODES and not (mode in NEEDS_NUMPY and np is None):
             self.mode = mode
 
     def next_mode(self, step=1):
-        modes = [m for m in MODES if not (m == "plasma" and np is None)]
+        modes = [m for m in MODES if not (m in NEEDS_NUMPY and np is None)]
         self.mode = modes[(modes.index(self.mode) + step) % len(modes)] if self.mode in modes else modes[0]
 
     def handle_event(self, e):
@@ -643,8 +672,69 @@ class VisualsManager:
         self.tone += (tgt["tone"] - self.tone) * (1 - math.exp(-dt * 0.8))
         for name, decay in (("kick", 8.0), ("snare", 10.0), ("hat", 15.0), ("bassnote", 7.0), ("tick", 9.0)):
             setattr(self, name, max(getattr(self, name) * math.exp(-dt * decay), hits[name]))
+        self._react_spectrum(dt, a if (a is not None and self._clock_ok) else None)
         self.grid_pos += dt * 0.5 * self.speed * (1 + 2.2 * self.kick)
         self.kick_phase += dt * (1.5 + 9.0 * self.kick)
+
+    # ---- spettro per l'equalizzatore attorno al campo ----
+    def _react_spectrum(self, dt, a):
+        nb = SPEC_BANDS
+        if a is not None and a.spec is not None:
+            i = max(0, min(a.n - 1, int((self._clock + self.sync_offset) * ENV_HZ)))
+            tgt = (a.spec[i] / 255.0).tolist()
+        else:       # niente analisi: spettro sintetico interpolando lo/mid/hi, con un po' di vita
+            tgt = []
+            for b in range(nb):
+                u = b / (nb - 1)
+                base = (self.lo * max(0.0, 1 - u * 2.2) + self.mid * max(0.0, 1 - abs(u - 0.5) * 2.4)
+                        + self.hi * max(0.0, (u - 0.45) * 1.8))
+                wob = 0.5 + 0.5 * math.sin(self.anim * (2.0 + b * 0.37) + b * 1.7)
+                tgt.append(max(0.0, min(1.0, base * (0.55 + 0.45 * wob))))
+        up, down = 1 - math.exp(-dt * 40.0), 1 - math.exp(-dt * 9.0)
+        for b in range(nb):
+            cur = self.spec[b]
+            self.spec[b] = cur + (tgt[b] - cur) * (up if tgt[b] > cur else down)
+
+    def spectrum(self, n):
+        """n valori 0..1 (basso -> acuto), ricampionati dalle bande smussate."""
+        nb = SPEC_BANDS
+        if n <= 1:
+            return [self.spec[0]] * max(n, 0)
+        out = []
+        for i in range(n):
+            x = i * (nb - 1) / (n - 1)
+            j = min(nb - 2, int(x))
+            f = x - j
+            out.append(self.spec[j] * (1 - f) + self.spec[j + 1] * f)
+        return out
+
+    # ---- beat (usato da Rhythm Mode) ----
+    def beat_info(self, lookahead=1.2):
+        """Stato del beat rispetto alla musica in riproduzione, oppure None se non c'e'
+        un'analisi con beat affidabili (il chiamante ripiega su un metronomo).
+        -> dict(offset=secondi dal beat piu' vicino (+ = dopo), to_next, since_last,
+                upcoming=[secondi mancanti ai prossimi beat entro 'lookahead'])"""
+        a = self.analysis
+        if a is None or np is None or not self._clock_ok:
+            return None
+        beats = a.beat_times()
+        if len(beats) == 0:
+            return None
+        t = self._clock + self.sync_offset
+        k = int(np.searchsorted(beats, t))
+        prev_t = beats[k - 1] if k > 0 else None
+        next_t = beats[k] if k < len(beats) else None
+        if prev_t is None and next_t is None:
+            return None
+        d_prev = (t - prev_t) if prev_t is not None else 1e9
+        d_next = (next_t - t) if next_t is not None else 1e9
+        offset = d_prev if d_prev <= d_next else -d_next
+        up = []
+        j = k
+        while j < len(beats) and beats[j] - t <= lookahead:
+            up.append(float(beats[j] - t))
+            j += 1
+        return {"offset": float(offset), "to_next": float(d_next), "since_last": float(d_prev), "upcoming": up}
 
     # ---- cache superfici ----
     def _ensure(self, sw, sh):
@@ -653,14 +743,11 @@ class VisualsManager:
         self.size = (sw, sh)
         self._grads.clear()
         self._glows.clear()
-        self._plasma = None
+        self._plasma = self._aur = self._mx = self._gal = None
         rnd = random.Random(7)
         area = sw * sh
         self._stars = [[rnd.uniform(0, sw), rnd.uniform(0, sh), layer, rnd.random()]
                        for layer, cnt in enumerate((area // 9000, area // 16000, area // 40000)) for _ in range(cnt)]
-        n = min(90, max(22, area // 28000))
-        self._squares = [[rnd.uniform(0, sw), rnd.uniform(0, sh), rnd.randint(14, 60), rnd.uniform(8, 32),
-                          rnd.choice(self.colors)] for _ in range(n)]
         hz = int(sh * 0.50)
         pts, step, h = [], max(8, sw // 16), 0.0
         for x in range(0, sw + step, step):
@@ -700,7 +787,7 @@ class VisualsManager:
         sw, sh = screen.get_size()
         self._ensure(sw, sh)
         mode = self.mode
-        if mode == "plasma" and np is None:
+        if mode in NEEDS_NUMPY and np is None:
             mode = "synthwave"
         getattr(self, "_draw_" + mode)(screen, sw, sh)
         if self.debug:
@@ -828,20 +915,170 @@ class VisualsManager:
         pygame.transform.smoothscale(g["small"], (sw, sh), g["big"])
         scr.blit(g["big"], (0, 0))
 
-    # -- quadrati fluttuanti (lo sfondo originale) --
-    def _draw_squares(self, scr, sw, sh):
+    def _spec_at(self, u):
+        """Valore smussato dello spettro (0..1) alla posizione u in 0..1 (basso -> acuto)."""
+        return self.spec[max(0, min(SPEC_BANDS - 1, int(u * SPEC_BANDS)))]
+
+    # -- tunnel: anelli esagonali che volano verso di te --
+    def _draw_tunnel(self, scr, sw, sh):
         h, kick = self._h(), self.kick
-        bg0, bg1 = _q(_hsv(h, 0.8, 0.10)), _q(_hsv(h - 0.05, 0.8, 0.02))
-        scr.blit(self._grad("sqbg", (sw, sh), bg0, bg1), (0, 0))
-        mix_bg = _lerp(bg0, bg1, 0.5)
-        for s in self._squares:
-            s[1] -= s[3] * self.dt * self.speed * (1 + 1.5 * kick)
-            if s[1] < -s[2]:
-                s[0], s[1] = random.uniform(0, sw), sh + s[2]
-            size = int(s[2] * (1 + 0.18 * kick))
-            col = _lerp(mix_bg, s[4], min(1.0, 0.16 + 0.35 * kick + 0.12 * self.mid))
-            off = (size - s[2]) // 2
-            pygame.draw.rect(scr, col, (int(s[0]) - off, int(s[1]) - off, size, size), width=2, border_radius=8)
+        scr.blit(self._grad("tnbg", (sw, sh), _q(_hsv(h, 0.85, 0.02)), _q(_hsv(h - 0.04, 0.8, 0.08))), (0, 0))
+        cx = sw // 2 + int(math.sin(self.anim * 0.5) * sw * 0.05 * (0.4 + self.mid))
+        cy = sh // 2 + int(math.cos(self.anim * 0.37) * sh * 0.04 * (0.4 + self.mid))
+        self._tun_pos += self.dt * 3.5 * self.speed * (1 + 1.6 * kick)
+        n, sides = 20, 6
+        rmax = math.hypot(sw, sh) * 0.62
+        rot = self.anim * 0.12
+        glow = self._glow(rmax * 0.45, _hsv(h + 0.05, 0.9, 1.0))
+        glow.set_alpha(int(255 * min(1.0, 0.18 + 0.6 * kick + 0.2 * self.lo)))
+        scr.blit(glow, glow.get_rect(center=(cx, cy)))
+        spoke = _hsv(h + 0.1, 0.8, min(1.0, 0.16 + 0.35 * self.lo))
+        for i in range(sides):
+            a = rot + i * math.tau / sides
+            pygame.draw.line(scr, spoke, (cx, cy), (cx + rmax * math.cos(a), cy + rmax * math.sin(a)), max(1, sh // 500))
+        base_k = int(self._tun_pos)
+        frac = self._tun_pos - base_k
+        for j in range(n, 0, -1):                    # dal piu' lontano al piu' vicino
+            k = base_k + j
+            t = 1.0 - (j - frac) / n
+            r = rmax * t ** 2.2
+            if r < 3:
+                continue
+            v = self._spec_at(1.0 - t)               # vicino = bassi, lontano = acuti
+            bright = (0.25 + 0.75 * t ** 0.8) * (0.55 + 0.9 * v)
+            col = _hsv(h + 0.3 * t + 0.08 * math.sin(k * 0.9), 0.85, min(1.0, bright))
+            a0 = rot + t * 0.9 + k * 0.05
+            pts = [(cx + r * math.cos(a0 + i * math.tau / sides), cy + r * math.sin(a0 + i * math.tau / sides))
+                   for i in range(sides)]
+            pygame.draw.polygon(scr, col, pts, max(1, int((1 + 5 * t ** 1.5 * (1 + kick)) * sh / 700 + 0.5)))
+
+    # -- matrix: pioggia di caratteri --
+    _MX_CHARS = "0123456789ABCDEF<>/\\|+*=$#%&@"
+
+    def _draw_matrix(self, scr, sw, sh):
+        h, kick = self._h(), self.kick
+        cell = max(14, sh // 38)
+        n = sw // cell + 1
+        m = self._mx
+        if m is None or m["cell"] != cell or m["n"] != n:
+            rnd = random.Random(11)
+            try:
+                font = pygame.font.SysFont("consolas,dejavusansmono,couriernew,menlo,monospace", cell, bold=True)
+            except Exception:
+                font = pygame.font.Font(None, cell)
+            rows = sh // cell + 1
+            cols = []
+            for _ in range(n):
+                ln = rnd.randint(8, 22)
+                cols.append([rnd.uniform(-ln, rows), rnd.uniform(6, 18), ln])
+            m = self._mx = {"cell": cell, "n": n, "font": font, "sets": {}, "cols": cols}
+        key = round(h * 12) % 12
+        gl = m["sets"].get(key)
+        if gl is None:
+            if len(m["sets"]) > 3:
+                m["sets"].clear()
+            base = _hsv(key / 12.0, 0.85, 1.0)
+            levels = [[m["font"].render(c, True, _lerp(_scale(base, 0.12), base, (L + 1) / 8.0))
+                       for c in self._MX_CHARS] for L in range(8)]
+            head = [m["font"].render(c, True, _lerp(base, (255, 255, 255), 0.75)) for c in self._MX_CHARS]
+            gl = m["sets"][key] = (levels, head)
+        levels, head = gl
+        scr.fill(_q(_hsv(h, 0.8, 0.035 + 0.03 * kick)))
+        rows = sh // cell + 1
+        boost = self.speed * (1 + 2.2 * kick)
+        nch = len(self._MX_CHARS)
+        t4, t14 = int(self.anim * 4), int(self.anim * 14)
+        for ci, col in enumerate(m["cols"]):
+            col[0] += col[1] * self.dt * boost
+            if col[0] - col[2] > rows:
+                col[0], col[1], col[2] = random.uniform(-6, 0), random.uniform(6, 18), random.randint(8, 22)
+            top = int(col[0])
+            x = ci * cell
+            ln = col[2]
+            for r in range(ln):
+                row = top - r
+                if row < 0 or row >= rows:
+                    continue
+                if r == 0:
+                    scr.blit(head[(ci * 131 + row * 17 + t14) % nch], (x, row * cell))
+                else:
+                    scr.blit(levels[7 - int(7 * r / ln)][(ci * 131 + row * 17 + t4) % nch], (x, row * cell))
+
+    # -- aurora (numpy): cortine di luce --
+    def _draw_aurora(self, scr, sw, sh):
+        h, kick = self._h(), self.kick
+        g = self._aur
+        if g is None:
+            gw = max(64, min(160, sw // 8))
+            gh = max(36, int(gw * sh / sw))
+            g = self._aur = {"x": np.linspace(0, 1, gw, dtype=np.float32)[:, None],
+                             "y": np.linspace(0, 1, gh, dtype=np.float32)[None, :],
+                             "small": pygame.Surface((gw, gh), 0, 32), "big": pygame.Surface((sw, sh), 0, 32)}
+        x, y = g["x"], g["y"]
+        t = self.anim * 0.4
+        img = np.zeros((x.shape[0], y.shape[1], 3), np.float32)
+        for c in range(3):
+            yc = (0.26 + 0.12 * c + 0.07 * np.sin(x * (3 + c) + t * (0.7 + 0.3 * c) + c * 2.0)
+                  + 0.03 * self.lo * np.sin(x * 9 - t * 2))
+            wid = 0.06 + 0.05 * self.mid + 0.02 * c
+            band = np.exp(-(((y - yc) / wid) ** 2))
+            rays = 0.55 + 0.45 * np.sin(x * (40 + 12 * c) + t * 1.3 + np.sin(x * 7 + t) * 2)
+            inten = band * rays * (0.40 + 0.9 * self.lo + 0.8 * kick)
+            col = np.array(_hsv(h + 0.17 * c - 0.05, 0.75, 1.0), np.float32) / 255.0
+            img += inten[:, :, None] * col
+        pygame.surfarray.blit_array(g["small"], (np.clip(img * 0.9, 0, 1) * 255).astype(np.uint8))
+        pygame.transform.smoothscale(g["small"], (sw, sh), g["big"])
+        scr.blit(self._grad("aubg", (sw, sh), _q(_hsv(h + 0.55, 0.7, 0.02)), _q(_hsv(h + 0.6, 0.6, 0.10))), (0, 0))
+        for sx, sy, layer, ph in self._stars:
+            if layer <= 1:
+                b = 0.35 + 0.35 * math.sin(self.anim * 2 + ph * 20) + 0.5 * self.hat * (ph > 0.5)
+                scr.fill(_scale((255, 245, 255), max(0.1, min(1.0, b))), (int(sx), int(sy), 2, 2))
+        scr.blit(g["big"], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        poly = [(0, sh)] + [(px, py + int(sh * 0.38)) for px, py in self._mountains] + [(sw, sh)]
+        pygame.draw.polygon(scr, _hsv(h + 0.55, 0.6, 0.015), poly)
+
+    # -- galaxy: due spirali ai lati (il centro e' coperto dal gioco) --
+    def _draw_galaxy(self, scr, sw, sh):
+        h, kick = self._h(), self.kick
+        if self._gal is None:
+            rnd = random.Random(5)
+            n, arms = min(1100, max(350, sw * sh // 1900)), 2
+            self._gal = []
+            for _ in range(n):
+                r = 0.04 + 0.96 * rnd.random() ** 0.85
+                self._gal.append([r, rnd.randrange(arms) * math.tau / arms + rnd.gauss(0, 0.08 + 0.22 * (1 - r)),
+                                  rnd.choice((1, 1, 2, 2, 3)), rnd.random()])
+        scr.blit(self._grad("glbg", (sw, sh), _q(_hsv(h, 0.8, 0.02)), _q(_hsv(h - 0.06, 0.8, 0.09))), (0, 0))
+        for sx, sy, layer, ph in self._stars:
+            if layer == 0:
+                b = 0.25 + 0.3 * math.sin(self.anim * 1.5 + ph * 20)
+                scr.fill(_scale((230, 235, 255), max(0.08, min(0.8, b))), (int(sx), int(sy), 2, 2))
+        # il campo di gioco occupa il centro (canvas 720x700 scalato): i nuclei stanno nelle due fasce laterali
+        side = max((sw - sh * 720.0 / 700.0) / 2.0, sw * 0.12)
+        R = max(side * 1.15, sh * 0.42)
+        px = max(1, sh // 520)                       # stelle un po' piu' grandi a risoluzioni alte
+        spec, wob, scale = self.spec, self.anim * 3, 1 + 0.05 * kick
+        for cx, dirn, hoff in ((side * 0.5, 1, 0.0), (sw - side * 0.5, -1, 0.18)):
+            cy = sh * 0.5
+            tilt = 0.62 + 0.05 * math.sin(self.anim * 0.2 + hoff * 9)
+            phi = dirn * 0.5                         # inclinazione dell'ellisse, opposta nelle due galassie
+            cph, sph = math.cos(phi), math.sin(phi)
+            rot = dirn * self.anim * 0.18 + hoff * 5
+            glow = self._glow(R * 0.5, _hsv(h + hoff + 0.08, 0.7, 1.0))
+            glow.set_alpha(int(255 * min(1.0, 0.30 + 0.6 * kick + 0.25 * self.lo)))
+            scr.blit(glow, glow.get_rect(center=(int(cx), int(cy))))
+            warm, cool = _hsv(h + hoff + 0.08, 0.55, 1.0), _hsv(h + hoff - 0.10, 0.85, 1.0)
+            ramp = [_lerp(warm, cool, i / 15.0) for i in range(16)]
+            for r, a0, size, ph in self._gal:
+                ang = a0 + dirn * r * 4.2 + rot
+                ex, ey = r * R * scale * math.cos(ang), r * R * scale * math.sin(ang) * tilt
+                x, y = cx + ex * cph - ey * sph, cy + ex * sph + ey * cph
+                if x < -4 or x > sw or y < -4 or y > sh:
+                    continue
+                b = (0.62 + 0.38 * (1 - r) ** 0.6) * (0.6 + 0.9 * spec[int(r * 23.99)]) * (0.85 + 0.3 * math.sin(wob + ph * 30))
+                c = ramp[int(r * 15.99)]
+                scr.fill((min(255, int(c[0] * b)), min(255, int(c[1] * b)), min(255, int(c[2] * b))),
+                         (int(x), int(y), size * px, size * px))
 
     # -- HUD di debug --
     def _draw_debug(self, scr):
